@@ -1,0 +1,187 @@
+const express = require("express");
+const fs = require("fs");
+const path = require("path");
+const crypto = require("crypto");
+const bcrypt = require("bcryptjs");
+const { db } = require("../db");
+const { uid, nowISO } = require("../ids");
+const requireAuth = require("../middleware");
+const { issueToken } = require("../auth");
+
+const RECORDINGS_DIR = path.join(__dirname, "..", "..", "data", "recordings");
+
+const router = express.Router();
+router.use(requireAuth, requireAuth.requireAdmin);
+
+function logAudit(adminId, action, targetUserId, details) {
+  db.prepare(`
+    INSERT INTO admin_audit_log (id, admin_id, action, target_user_id, details, created_at)
+    VALUES (?, ?, ?, ?, ?, ?)
+  `).run(uid(), adminId, action, targetUserId || null, details ? JSON.stringify(details) : null, nowISO());
+}
+
+// Real admins ('role'='admin') keep today's unrestricted power. A test_admin acting
+// through this same dashboard can only touch test_instructor/test_user accounts —
+// not real admins, not other test_admins, and not real production users.
+function canActOn(actingUserId, targetRole) {
+  const acting = db.prepare("SELECT role FROM users WHERE id = ?").get(actingUserId);
+  if (!acting || acting.role !== "test_admin") return true;
+  return targetRole === "test_instructor" || targetRole === "test_user";
+}
+const SCOPE_DENIED = { error: "Test admin accounts can only manage test instructor/user accounts." };
+
+// Real bytes for recordings (grouped by owner), approximate character-count bytes
+// for course material (there's no clean per-user disk breakdown inside one shared
+// SQLite file otherwise, so this is built deliberately rather than assumed).
+function storageByUser() {
+  const byUser = {};
+  const recordings = db.prepare("SELECT user_id, file_name FROM audio_recordings").all();
+  recordings.forEach((r) => {
+    let size = 0;
+    try { size = fs.statSync(path.join(RECORDINGS_DIR, r.file_name)).size; } catch (e) {}
+    byUser[r.user_id] = byUser[r.user_id] || { recordingBytes: 0, courseMaterialBytes: 0 };
+    byUser[r.user_id].recordingBytes += size;
+  });
+  const courseRows = db.prepare(`
+    SELECT courses.user_id AS user_id,
+      SUM(LENGTH(COALESCE(lessons.html, '')) + LENGTH(COALESCE(lessons.text, '')) + LENGTH(COALESCE(lessons.data_url, ''))) AS bytes
+    FROM lessons JOIN courses ON courses.id = lessons.course_id
+    GROUP BY courses.user_id
+  `).all();
+  courseRows.forEach((r) => {
+    byUser[r.user_id] = byUser[r.user_id] || { recordingBytes: 0, courseMaterialBytes: 0 };
+    byUser[r.user_id].courseMaterialBytes += r.bytes || 0;
+  });
+  return byUser;
+}
+
+router.get("/users", (req, res) => {
+  const users = db.prepare("SELECT * FROM users ORDER BY created_at").all();
+  const storage = storageByUser();
+  const sessionCount = db.prepare("SELECT user_id, COUNT(*) AS n FROM sessions GROUP BY user_id").all();
+  const sprintCount = db.prepare("SELECT user_id, COUNT(*) AS n FROM sprints GROUP BY user_id").all();
+  const sessionCountByUser = Object.fromEntries(sessionCount.map((r) => [r.user_id, r.n]));
+  const sprintCountByUser = Object.fromEntries(sprintCount.map((r) => [r.user_id, r.n]));
+
+  res.json(users.map((u) => ({
+    id: u.id, email: u.email, verified: !!u.verified, isAdmin: !!u.is_admin, role: u.role,
+    mustChangePassword: !!u.must_change_password,
+    createdAt: u.created_at, lastLoginAt: u.last_login_at || null,
+    sessionCount: sessionCountByUser[u.id] || 0, sprintCount: sprintCountByUser[u.id] || 0,
+    recordingBytes: (storage[u.id] || {}).recordingBytes || 0,
+    courseMaterialBytesApprox: (storage[u.id] || {}).courseMaterialBytes || 0,
+  })));
+});
+
+router.get("/audit-log", (req, res) => {
+  const rows = db.prepare("SELECT * FROM admin_audit_log ORDER BY created_at DESC LIMIT 200").all();
+  res.json(rows.map((r) => ({
+    id: r.id, adminId: r.admin_id, action: r.action, targetUserId: r.target_user_id,
+    details: r.details ? JSON.parse(r.details) : null, createdAt: r.created_at,
+  })));
+});
+
+router.post("/users/:id/impersonate", (req, res) => {
+  const target = db.prepare("SELECT * FROM users WHERE id = ?").get(req.params.id);
+  if (!target) return res.status(404).json({ error: "Not found." });
+  if (target.id === req.user.id) return res.status(400).json({ error: "You can't impersonate yourself." });
+  if (!canActOn(req.user.id, target.role)) return res.status(403).json(SCOPE_DENIED);
+  issueToken(req, res, { id: target.id, email: target.email, isAdmin: !!target.is_admin }, { impersonatedBy: req.user.id });
+  logAudit(req.user.id, "impersonate", target.id, { email: target.email });
+  res.json({ ok: true });
+});
+
+router.post("/users/:id/notices", (req, res) => {
+  const target = db.prepare("SELECT * FROM users WHERE id = ?").get(req.params.id);
+  if (!target) return res.status(404).json({ error: "Not found." });
+  if (!canActOn(req.user.id, target.role)) return res.status(403).json(SCOPE_DENIED);
+  const message = (req.body?.message || "").trim();
+  if (!message) return res.status(400).json({ error: "message is required." });
+  const row = { id: uid(), user_id: target.id, message, created_at: nowISO() };
+  db.prepare("INSERT INTO admin_notices (id, user_id, message, created_at) VALUES (?, ?, ?, ?)")
+    .run(row.id, row.user_id, row.message, row.created_at);
+  logAudit(req.user.id, "notice", target.id, { message });
+  res.json({ ok: true });
+});
+
+router.post("/users/:id/require-password-change", (req, res) => {
+  const target = db.prepare("SELECT * FROM users WHERE id = ?").get(req.params.id);
+  if (!target) return res.status(404).json({ error: "Not found." });
+  if (!canActOn(req.user.id, target.role)) return res.status(403).json(SCOPE_DENIED);
+  db.prepare("UPDATE users SET must_change_password = 1 WHERE id = ?").run(target.id);
+  logAudit(req.user.id, "require-password-change", target.id, { email: target.email });
+  res.json({ ok: true });
+});
+
+router.patch("/users/:id", (req, res) => {
+  const target = db.prepare("SELECT * FROM users WHERE id = ?").get(req.params.id);
+  if (!target) return res.status(404).json({ error: "Not found." });
+  if (!canActOn(req.user.id, target.role)) return res.status(403).json(SCOPE_DENIED);
+  const email = (req.body?.email || "").trim();
+  if (!email) return res.status(400).json({ error: "email is required." });
+  if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) return res.status(400).json({ error: "Enter a valid email address." });
+  const clash = db.prepare("SELECT id FROM users WHERE email = ? COLLATE NOCASE AND id != ?").get(email, target.id);
+  if (clash) return res.status(400).json({ error: "Another account already uses that email." });
+  db.prepare("UPDATE users SET email = ? WHERE id = ?").run(email, target.id);
+  logAudit(req.user.id, "edit-user", target.id, { oldEmail: target.email, newEmail: email });
+  res.json({ ok: true });
+});
+
+// Deletes a user and every row that depends on them. No ON DELETE CASCADE is defined
+// on these tables (foreign_keys is ON for ordinary request handling), so FK checks are
+// dropped for the duration of this one transaction rather than hand-ordering ~15 tables.
+router.delete("/users/:id", (req, res) => {
+  const target = db.prepare("SELECT * FROM users WHERE id = ?").get(req.params.id);
+  if (!target) return res.status(404).json({ error: "Not found." });
+  if (target.id === req.user.id) return res.status(400).json({ error: "You can't delete your own account." });
+  if (target.is_admin) return res.status(400).json({ error: "Admin accounts can't be deleted here." });
+  if (!canActOn(req.user.id, target.role)) return res.status(403).json(SCOPE_DENIED);
+
+  const recordings = db.prepare("SELECT file_name FROM audio_recordings WHERE user_id = ?").all(target.id);
+
+  db.exec("PRAGMA foreign_keys = OFF");
+  try {
+    db.exec("BEGIN");
+    db.prepare("DELETE FROM audio_recordings WHERE user_id = ?").run(target.id);
+    db.prepare("DELETE FROM session_blocks WHERE session_id IN (SELECT id FROM sessions WHERE user_id = ?)").run(target.id);
+    db.prepare("DELETE FROM sessions WHERE user_id = ?").run(target.id);
+    db.prepare("DELETE FROM queue_items WHERE sprint_id IN (SELECT id FROM sprints WHERE user_id = ?)").run(target.id);
+    db.prepare("DELETE FROM sprints WHERE user_id = ?").run(target.id);
+    db.prepare("DELETE FROM notes WHERE user_id = ?").run(target.id);
+    db.prepare("DELETE FROM lessons WHERE course_id IN (SELECT id FROM courses WHERE user_id = ?)").run(target.id);
+    db.prepare("DELETE FROM courses WHERE user_id = ?").run(target.id);
+    db.prepare("DELETE FROM gear_maintenance WHERE gear_id IN (SELECT id FROM gear WHERE user_id = ?)").run(target.id);
+    db.prepare("DELETE FROM gear WHERE user_id = ?").run(target.id);
+    db.prepare("DELETE FROM techniques WHERE user_id = ?").run(target.id);
+    db.prepare("DELETE FROM plans WHERE user_id = ?").run(target.id);
+    db.prepare("DELETE FROM topics WHERE user_id = ?").run(target.id);
+    db.prepare("DELETE FROM theory WHERE user_id = ?").run(target.id);
+    db.prepare("DELETE FROM custom_tunings WHERE user_id = ?").run(target.id);
+    db.prepare("DELETE FROM admin_notices WHERE user_id = ?").run(target.id);
+    db.prepare("UPDATE admin_audit_log SET target_user_id = NULL WHERE target_user_id = ?").run(target.id);
+    db.prepare("DELETE FROM users WHERE id = ?").run(target.id);
+    db.exec("COMMIT");
+  } catch (e) {
+    db.exec("ROLLBACK");
+    db.exec("PRAGMA foreign_keys = ON");
+    throw e;
+  }
+  db.exec("PRAGMA foreign_keys = ON");
+
+  recordings.forEach((r) => { try { fs.unlinkSync(path.join(RECORDINGS_DIR, r.file_name)); } catch (e) {} });
+  logAudit(req.user.id, "delete-user", null, { email: target.email, deletedUserId: target.id });
+  res.json({ ok: true });
+});
+
+router.post("/users/:id/reset-password", async (req, res) => {
+  const target = db.prepare("SELECT * FROM users WHERE id = ?").get(req.params.id);
+  if (!target) return res.status(404).json({ error: "Not found." });
+  if (!canActOn(req.user.id, target.role)) return res.status(403).json(SCOPE_DENIED);
+  const temporaryPassword = crypto.randomBytes(6).toString("hex"); // always 12 alphanumeric chars, no stripping edge cases
+  const passwordHash = await bcrypt.hash(temporaryPassword, 10);
+  db.prepare("UPDATE users SET password_hash = ? WHERE id = ?").run(passwordHash, target.id);
+  logAudit(req.user.id, "reset-password", target.id, {}); // never the plaintext
+  res.json({ ok: true, temporaryPassword });
+});
+
+module.exports = router;
