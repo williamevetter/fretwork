@@ -21,9 +21,17 @@ const DEFAULT_TECHNIQUES = [
   "Fingerstyle", "Hybrid Picking", "String Skipping", "Bending & Vibrato", "Palm Muting",
 ];
 
-function issueToken(req, res, user) {
-  const token = jwt.sign({ sub: user.id, email: user.email }, process.env.JWT_SECRET, { expiresIn: "30d" });
-  res.cookie("fw_token", token, { ...COOKIE_OPTS, secure: req.secure });
+// opts.impersonatedBy issues a short-lived (1h) token acting as `user` on behalf of
+// the admin whose id is given — used only by the admin impersonate route.
+function issueToken(req, res, user, opts) {
+  const impersonatedBy = opts && opts.impersonatedBy ? opts.impersonatedBy : null;
+  const expiresIn = impersonatedBy ? "1h" : "30d";
+  const token = jwt.sign(
+    { sub: user.id, email: user.email, isAdmin: !!user.isAdmin, impersonatedBy },
+    process.env.JWT_SECRET,
+    { expiresIn }
+  );
+  res.cookie("fw_token", token, { ...COOKIE_OPTS, secure: req.secure, maxAge: impersonatedBy ? 60 * 60 * 1000 : COOKIE_OPTS.maxAge });
 }
 function isValidEmail(e) {
   return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(e);
@@ -107,7 +115,8 @@ router.post("/login", async (req, res) => {
   const ok = await bcrypt.compare(password || "", user.password_hash);
   if (!ok) return res.status(401).json({ error: "Incorrect email or password." });
   if (!user.verified) return res.status(403).json({ error: "Please verify your email before logging in." });
-  issueToken(req, res, { id: user.id, email: user.email });
+  db.prepare("UPDATE users SET last_login_at = ? WHERE id = ?").run(nowISO(), user.id);
+  issueToken(req, res, { id: user.id, email: user.email, isAdmin: !!user.is_admin });
   res.json({ ok: true });
 });
 
@@ -120,7 +129,20 @@ router.get("/me", requireAuth, (req, res) => {
   const user = db.prepare("SELECT * FROM users WHERE id = ?").get(req.user.id);
   if (!user) return res.status(401).json({ error: "Not found." });
   const { notifyPrefs, gearReminderDays } = rowToUser(user);
-  res.json({ email: user.email, notifyPrefs, gearReminderDays });
+  res.json({
+    email: user.email, notifyPrefs, gearReminderDays,
+    isAdmin: !!user.is_admin, impersonatedBy: req.user.impersonatedBy, lastLoginAt: user.last_login_at,
+  });
+});
+
+// Works while the current token IS an impersonation token (requireAuth only, not
+// requireAdmin) — re-issues the original admin's own normal token.
+router.post("/stop-impersonating", requireAuth, (req, res) => {
+  if (!req.user.impersonatedBy) return res.status(400).json({ error: "Not currently impersonating anyone." });
+  const admin = db.prepare("SELECT * FROM users WHERE id = ?").get(req.user.impersonatedBy);
+  if (!admin) return res.status(404).json({ error: "Admin account not found." });
+  issueToken(req, res, { id: admin.id, email: admin.email, isAdmin: !!admin.is_admin });
+  res.json({ ok: true });
 });
 
 router.post("/forgot-password", async (req, res) => {
@@ -180,3 +202,4 @@ router.put("/account/password", requireAuth, async (req, res) => {
 });
 
 module.exports = router;
+module.exports.issueToken = issueToken;

@@ -204,6 +204,31 @@ const MIGRATIONS = [
   );
   CREATE INDEX idx_recordings_session ON audio_recordings(session_id);
   `,
+  // Admin dashboard: owner-only (set by email, once, here — never by application code).
+  // Impersonation and notices both key off this same users table.
+  `
+  ALTER TABLE users ADD COLUMN is_admin INTEGER NOT NULL DEFAULT 0;
+  ALTER TABLE users ADD COLUMN last_login_at TEXT;
+  UPDATE users SET is_admin = 1 WHERE email = 'paladin@darthvetter.com' COLLATE NOCASE;
+
+  CREATE TABLE admin_notices (
+    id TEXT PRIMARY KEY,
+    user_id TEXT NOT NULL REFERENCES users(id),
+    message TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    shown_at TEXT
+  );
+  CREATE INDEX idx_notices_user ON admin_notices(user_id);
+
+  CREATE TABLE admin_audit_log (
+    id TEXT PRIMARY KEY,
+    admin_id TEXT NOT NULL REFERENCES users(id),
+    action TEXT NOT NULL,
+    target_user_id TEXT REFERENCES users(id),
+    details TEXT,
+    created_at TEXT NOT NULL
+  );
+  `,
 ];
 
 function runMigrations() {

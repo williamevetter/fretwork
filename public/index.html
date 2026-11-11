@@ -72,6 +72,17 @@ const api = {
     remove: (id) => apiCall("DELETE", `/recordings/${id}`),
     fileUrl: (id) => "/api/recordings/" + id + "/file",
   },
+  admin: {
+    users: () => apiCall("GET", "/admin/users"),
+    auditLog: () => apiCall("GET", "/admin/audit-log"),
+    impersonate: (id) => apiCall("POST", `/admin/users/${id}/impersonate`),
+    sendNotice: (id, message) => apiCall("POST", `/admin/users/${id}/notices`, { message }),
+    resetPassword: (id) => apiCall("POST", `/admin/users/${id}/reset-password`),
+  },
+  notices: {
+    pending: () => apiCall("GET", "/notices/pending"),
+    dismiss: (id) => apiCall("POST", `/notices/${id}/dismiss`),
+  },
   plans: {
     list: () => apiCall("GET", "/plans"),
     create: (body) => apiCall("POST", "/plans", body),
@@ -1278,8 +1289,17 @@ function ToolsPanel() {
 /* ---------------------------------------------------------
    MAIN APP
 --------------------------------------------------------- */
-function App() {
+function App({ me }) {
     useGoogleFonts();
+    const [pendingNotice, setPendingNotice] = useState(null);
+    useEffect(() => {
+        api.notices.pending().then(setPendingNotice).catch(() => {});
+    }, []);
+    const dismissNotice = () => {
+        if (!pendingNotice) return;
+        api.notices.dismiss(pendingNotice.id).catch(() => {});
+        setPendingNotice(null);
+    };
     const [sessions, setSessions, sessionsReady] = useApiList(api.sessions.list);
     const [sprints, setSprints, sprintsReady] = useApiList(api.sprints.list);
     const [techniques, setTechniques, techniquesReady] = useApiList(api.techniques.list);
@@ -1351,7 +1371,15 @@ function App() {
                 cursor: "pointer",
                 color: tab === t.id ? "#1A1509" : C.inkDim,
                 background: tab === t.id ? C.brass : "transparent",
-            } }, t.label))), E(UtilitiesNavItem, { tab: tab, setTab: setTab }), E(ToolsPanel, null)),
+            } }, t.label))), E(UtilitiesNavItem, { tab: tab, setTab: setTab }), E(ToolsPanel, null),
+            me && me.isAdmin && E("button", {
+                onClick: () => setTab("admin"),
+                style: {
+                    flexShrink: 0, marginLeft: "auto", fontFamily: FONT_BODY, fontSize: 13, fontWeight: 600, padding: "8px 13px",
+                    borderRadius: 7, border: "none", cursor: "pointer",
+                    color: tab === "admin" ? "#1A1509" : C.inkDim, background: tab === "admin" ? C.brass : "transparent",
+                },
+            }, "Admin")),
         React.createElement("main", { style: { padding: 16, maxWidth: 900, margin: "0 auto" } },
             tab === "dashboard" && React.createElement(Dashboard, { data: data, setTab: setTab, sprints: sprints }),
             tab === "sessions" && (React.createElement(SessionsTab, { data: data, sessions: sessions, setSessions: setSessions, plans: plans, setPlans: setPlans, coursesIndex: coursesIndex, sprints: sprints, editSessionId: editSessionId, setEditSessionId: setEditSessionId })),
@@ -1365,7 +1393,85 @@ function App() {
             tab === "trainer" && React.createElement(TrainerTab, null),
             tab === "tuner" && E(GuitarTunerTab, null),
             tab === "chords" && E(ChordGeneratorTab, null),
-            tab === "cadence" && E(CadenceBuilderTab, null))));
+            tab === "cadence" && E(CadenceBuilderTab, null),
+            tab === "admin" && me && me.isAdmin && E(AdminDashboardTab, null)),
+        pendingNotice && E("div", {
+            style: { position: "fixed", inset: 0, background: "rgba(0,0,0,0.6)", display: "flex", alignItems: "center", justifyContent: "center", zIndex: 2000 },
+        },
+            E("div", { style: { background: C.surfaceRaised, border: `1px solid ${C.line}`, borderRadius: 10, padding: 22, maxWidth: 380, boxShadow: "0 12px 32px rgba(0,0,0,0.5)" } },
+                E("div", { style: { fontFamily: FONT_MONO, fontSize: 11, color: C.brass, marginBottom: 8, letterSpacing: "0.04em" } }, "NOTICE"),
+                E("div", { style: { fontSize: 14, lineHeight: 1.5, marginBottom: 18 } }, pendingNotice.message),
+                E("button", { onClick: dismissNotice, style: { background: C.brass, color: "#1A1509", border: "none", borderRadius: 7, padding: "8px 16px", cursor: "pointer", fontFamily: FONT_BODY, fontSize: 13, fontWeight: 600 } }, "Got it")))));
+}
+/* ---------------------------------------------------------
+   ADMIN DASHBOARD — owner-only. Per-user storage usage, impersonation for
+   support, one-time login notices, last-login visibility, password resets.
+   Every mutating action here is server-side audit-logged.
+--------------------------------------------------------- */
+function fmtBytes(n) {
+    if (!n) return "0 B";
+    const units = ["B", "KB", "MB", "GB"];
+    let i = 0;
+    let v = n;
+    while (v >= 1024 && i < units.length - 1) { v /= 1024; i++; }
+    return `${v.toFixed(v < 10 && i > 0 ? 1 : 0)} ${units[i]}`;
+}
+function AdminDashboardTab() {
+    const [users, setUsers] = useState(null);
+    const [error, setError] = useState("");
+    const [noticeDrafts, setNoticeDrafts] = useState({});
+    const [resetResults, setResetResults] = useState({});
+    const load = () => { api.admin.users().then(setUsers).catch((e) => setError(String(e))); };
+    useEffect(load, []);
+    const impersonate = async (u) => {
+        if (!window.confirm(`Impersonate ${u.email}? You'll act as this user until you exit.`)) return;
+        try { await api.admin.impersonate(u.id); window.location.reload(); }
+        catch (e) { setError(String(e)); }
+    };
+    const sendNotice = async (u) => {
+        const message = (noticeDrafts[u.id] || "").trim();
+        if (!message) return;
+        try {
+            await api.admin.sendNotice(u.id, message);
+            setNoticeDrafts((d) => ({ ...d, [u.id]: "" }));
+        } catch (e) { setError(String(e)); }
+    };
+    const resetPassword = async (u) => {
+        if (!window.confirm(`Generate a new temporary password for ${u.email}?`)) return;
+        try {
+            const r = await api.admin.resetPassword(u.id);
+            setResetResults((d) => ({ ...d, [u.id]: r.temporaryPassword }));
+        } catch (e) { setError(String(e)); }
+    };
+    if (error) return E("div", { style: { color: C.rust, fontFamily: FONT_MONO, fontSize: 13 } }, error);
+    if (!users) return E("div", { style: { color: C.inkFaint, fontFamily: FONT_MONO, fontSize: 13 } }, "loading…");
+    return E("div", null,
+        E("h2", { style: { fontFamily: FONT_DISPLAY, fontSize: 19, marginBottom: 14 } }, "Admin"),
+        E("div", { style: { overflowX: "auto" } },
+            E("table", { style: { width: "100%", borderCollapse: "collapse", fontSize: 12.5 } },
+                E("thead", null,
+                    E("tr", { style: { textAlign: "left", color: C.inkFaint, fontFamily: FONT_MONO, fontSize: 10.5, letterSpacing: "0.03em" } },
+                        ["EMAIL", "VERIFIED", "CREATED", "LAST LOGIN", "STORAGE", "ACTIVITY", "ACTIONS"].map((h) => (
+                            E("th", { key: h, style: { padding: "6px 10px", borderBottom: `1px solid ${C.line}` } }, h))))),
+                E("tbody", null, users.map((u) => (
+                    E("tr", { key: u.id, style: { borderBottom: `1px solid ${C.line}` } },
+                        E("td", { style: { padding: "8px 10px" } }, u.email, u.isAdmin && E("span", { style: { marginLeft: 6, fontSize: 10, color: C.brass, fontFamily: FONT_MONO } }, "ADMIN")),
+                        E("td", { style: { padding: "8px 10px", color: u.verified ? C.sage : C.inkFaint } }, u.verified ? "yes" : "no"),
+                        E("td", { style: { padding: "8px 10px", color: C.inkFaint, fontFamily: FONT_MONO, fontSize: 11 } }, (u.createdAt || "").slice(0, 10)),
+                        E("td", { style: { padding: "8px 10px", color: C.inkFaint, fontFamily: FONT_MONO, fontSize: 11 } }, u.lastLoginAt ? u.lastLoginAt.slice(0, 16).replace("T", " ") : "never"),
+                        E("td", { style: { padding: "8px 10px", fontFamily: FONT_MONO, fontSize: 11 } },
+                            fmtBytes(u.recordingBytes), " rec + ~", fmtBytes(u.courseMaterialBytesApprox), " course"),
+                        E("td", { style: { padding: "8px 10px", color: C.inkFaint, fontFamily: FONT_MONO, fontSize: 11 } },
+                            u.sessionCount, " sessions / ", u.sprintCount, " sprints"),
+                        E("td", { style: { padding: "8px 10px", minWidth: 220 } },
+                            u.isAdmin ? E("span", { style: { color: C.inkFaint, fontSize: 11.5 } }, "—") : E("div", { style: { display: "flex", flexDirection: "column", gap: 6 } },
+                                E("div", { style: { display: "flex", gap: 6 } },
+                                    E("button", { onClick: () => impersonate(u), style: { background: "transparent", border: `1px solid ${C.brass}66`, color: C.brass, borderRadius: 5, padding: "3px 8px", cursor: "pointer", fontSize: 11 } }, "Impersonate"),
+                                    E("button", { onClick: () => resetPassword(u), style: { background: "transparent", border: `1px solid ${C.rust}66`, color: C.rust, borderRadius: 5, padding: "3px 8px", cursor: "pointer", fontSize: 11 } }, "Reset password")),
+                                resetResults[u.id] && E("div", { style: { fontFamily: FONT_MONO, fontSize: 11, background: C.bg2, border: `1px solid ${C.line}`, borderRadius: 5, padding: "4px 6px", userSelect: "all" } }, resetResults[u.id]),
+                                E("div", { style: { display: "flex", gap: 6 } },
+                                    E("input", { value: noticeDrafts[u.id] || "", onChange: (e) => setNoticeDrafts((d) => ({ ...d, [u.id]: e.target.value })), placeholder: "notice message…", style: { flex: 1, fontSize: 11, padding: "3px 6px", borderRadius: 5, border: `1px solid ${C.line}`, background: C.bg2, color: C.ink } }),
+                                    E("button", { onClick: () => sendNotice(u), style: { background: "transparent", border: `1px solid ${C.line}`, color: C.inkDim, borderRadius: 5, padding: "3px 8px", cursor: "pointer", fontSize: 11 } }, "Send")))))))))));
 }
 /* ---------------------------------------------------------
    DATE RANGE — shared quick-range resolver + picker (Dashboard now,
@@ -3676,7 +3782,16 @@ function AuthGate() {
 }
 function AuthedShell({ me, onLogout, onPrefsSaved }) {
     const [showAccount, setShowAccount] = useState(false);
+    const exitImpersonation = async () => {
+        await fetch("/api/auth/stop-impersonating", { method: "POST", credentials: "include" });
+        onPrefsSaved();
+    };
     return (React.createElement("div", null,
+        me.impersonatedBy && E("div", {
+            style: { display: "flex", justifyContent: "space-between", alignItems: "center", padding: "8px 14px", background: C.rust, color: "#1A1509", fontFamily: FONT_MONO, fontSize: 11.5, fontWeight: 700 },
+        },
+            E("span", null, "⚠ Viewing as ", me.email, " — admin support session"),
+            E("button", { onClick: exitImpersonation, style: { background: "#1A1509", color: "#EDE4D3", border: "none", borderRadius: 5, padding: "5px 10px", cursor: "pointer", fontFamily: FONT_MONO, fontSize: 11.5 } }, "Exit")),
         React.createElement("div", { style: {
                 display: "flex",
                 justifyContent: "space-between",
@@ -3692,7 +3807,7 @@ function AuthedShell({ me, onLogout, onPrefsSaved }) {
             React.createElement("div", { style: { display: "flex", gap: 14 } },
                 React.createElement("button", { onClick: () => setShowAccount(true), style: { background: "none", border: "none", color: C.brass, cursor: "pointer", fontFamily: FONT_MONO, fontSize: 11.5, padding: 0 } }, "Account"),
                 React.createElement("button", { onClick: onLogout, style: { background: "none", border: "none", color: C.inkFaint, cursor: "pointer", fontFamily: FONT_MONO, fontSize: 11.5, padding: 0 } }, "Log out"))),
-        React.createElement(App, null),
+        React.createElement(App, { me: me }),
         showAccount && (React.createElement(AccountModal, { me: me, onClose: () => setShowAccount(false), onSaved: () => {
                 onPrefsSaved();
             } }))));
