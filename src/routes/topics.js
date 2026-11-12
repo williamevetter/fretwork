@@ -2,12 +2,19 @@ const express = require("express");
 const { db } = require("../db");
 const { uid, nowISO } = require("../ids");
 const requireAuth = require("../middleware");
+const { sendEmail } = require("../mailer");
 
 const router = express.Router();
 router.use(requireAuth);
 
 function rowToTopic(row) {
   return { id: row.id, type: row.type, text: row.text, status: row.status, created: row.created_at };
+}
+function isValidEmail(e) {
+  return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(e);
+}
+function escapeHtml(s) {
+  return String(s).replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
 }
 
 router.get("/", (req, res) => {
@@ -38,6 +45,27 @@ router.delete("/:id", (req, res) => {
   if (!row) return res.status(404).json({ error: "Not found." });
   db.prepare("DELETE FROM topics WHERE id = ?").run(req.params.id);
   res.json({ ok: true });
+});
+
+// Emails a chosen set of the user's own topics/questions/problems to an address
+// of their choosing (themselves, a saved contact, or a one-off typed address).
+router.post("/send-email", async (req, res) => {
+  const to = (req.body?.to || "").trim();
+  const ids = Array.isArray(req.body?.topicIds) ? req.body.topicIds : [];
+  if (!isValidEmail(to)) return res.status(400).json({ error: "Enter a valid email address." });
+  if (!ids.length) return res.status(400).json({ error: "Select at least one item to send." });
+
+  const placeholders = ids.map(() => "?").join(",");
+  const rows = db.prepare(`SELECT * FROM topics WHERE user_id = ? AND id IN (${placeholders})`).all(req.user.id, ...ids);
+  if (!rows.length) return res.status(404).json({ error: "Not found." });
+  const byId = new Map(rows.map((r) => [r.id, r]));
+  const ordered = ids.map((id) => byId.get(id)).filter(Boolean);
+
+  const text = "Topics & Questions from Fretwork:\n\n" + ordered.map((r) => `[${r.type.toUpperCase()}] ${r.text}`).join("\n");
+  const html = "<p>Topics &amp; Questions from Fretwork:</p><ul>" +
+    ordered.map((r) => `<li><strong>${escapeHtml(r.type)}</strong>: ${escapeHtml(r.text)}</li>`).join("") + "</ul>";
+  const result = await sendEmail({ to, subject: "Fretwork — Topics & Questions", text, html });
+  res.json({ ok: true, delivered: !!result.delivered });
 });
 
 module.exports = router;

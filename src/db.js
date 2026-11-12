@@ -238,6 +238,17 @@ const MIGRATIONS = [
   `
   ALTER TABLE users ADD COLUMN must_change_password INTEGER NOT NULL DEFAULT 0;
   `,
+  // Saved recipients for emailing Topics & Questions items to yourself or someone else.
+  `
+  CREATE TABLE email_contacts (
+    id TEXT PRIMARY KEY,
+    user_id TEXT NOT NULL REFERENCES users(id),
+    label TEXT NOT NULL,
+    email TEXT NOT NULL,
+    created_at TEXT NOT NULL
+  );
+  CREATE INDEX idx_email_contacts_user ON email_contacts(user_id);
+  `,
 ];
 
 function runMigrations() {

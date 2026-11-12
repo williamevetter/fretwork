@@ -23,6 +23,7 @@ const tuningsRouter = require("./src/routes/tunings");
 const recordingsRouter = require("./src/routes/recordings");
 const adminRouter = require("./src/routes/admin");
 const noticesRouter = require("./src/routes/notices");
+const contactsRouter = require("./src/routes/contacts");
 require("./src/reminders"); // schedules cron jobs as a side effect
 
 const app = express();
@@ -44,6 +45,7 @@ app.use("/api/tunings", tuningsRouter);
 app.use("/api/recordings", recordingsRouter);
 app.use("/api/admin", adminRouter);
 app.use("/api/notices", noticesRouter);
+app.use("/api/contacts", contactsRouter);
 
 app.use(express.static(path.join(__dirname, "public")));
 app.get("*", (req, res) => {

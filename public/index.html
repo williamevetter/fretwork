@@ -96,6 +96,12 @@ const api = {
     create: (body) => apiCall("POST", "/topics", body),
     toggle: (id) => apiCall("PATCH", `/topics/${id}`),
     remove: (id) => apiCall("DELETE", `/topics/${id}`),
+    sendEmail: (to, topicIds) => apiCall("POST", "/topics/send-email", { to, topicIds }),
+  },
+  contacts: {
+    list: () => apiCall("GET", "/contacts"),
+    create: (body) => apiCall("POST", "/contacts", body),
+    remove: (id) => apiCall("DELETE", `/contacts/${id}`),
   },
   gear: {
     list: () => apiCall("GET", "/gear"),
@@ -857,7 +863,7 @@ const TABS = [
     { id: "search", label: "Search Sessions" },
     { id: "sprints", label: "Sprints" },
     { id: "techniques", label: "Techniques" },
-    { id: "topics", label: "Topics" },
+    { id: "topics", label: "Topics & Questions" },
     { id: "courses", label: "Course Material" },
     { id: "gear", label: "Gear" },
     { id: "theory", label: "Theory" },
@@ -1389,7 +1395,7 @@ function App({ me }) {
             tab === "search" && E(SessionsSearchTab, { sessions: sessions, techniques: techniques, sprints: sprints, onEditSession: (id) => { setEditSessionId(id); setTab("sessions"); } }),
             tab === "sprints" && E(SprintsTab, { sessions: sessions, setSessions: setSessions, sprints: sprints, setSprints: setSprints, coursesIndex: coursesIndex, setTab: setTab }),
             tab === "techniques" && React.createElement(TechniquesTab, { sessions: sessions, techniques: techniques, setTechniques: setTechniques }),
-            tab === "topics" && React.createElement(TopicsTab, { topics: topics, setTopics: setTopics }),
+            tab === "topics" && React.createElement(TopicsTab, { topics: topics, setTopics: setTopics, me: me }),
             tab === "courses" && (React.createElement(CourseMaterialTab, { coursesIndex: coursesIndex, setCoursesIndex: setCoursesIndex, notes: notes, setNotes: setNotes })),
             tab === "gear" && React.createElement(GearTab, { gear: gear, setGear: setGear }),
             tab === "theory" && React.createElement(TheoryTab, { theory: theory, setTheory: setTheory }),
@@ -2651,9 +2657,54 @@ function TechniquesTab({ sessions, techniques, setTechniques }) {
 /* ---------------------------------------------------------
    TOPICS TAB (issues / problems / questions)
 --------------------------------------------------------- */
-function TopicsTab({ topics, setTopics }) {
+function EmailContactsModal({ contacts, setContacts, onClose }) {
+    const [form, setForm] = useState({ label: "", email: "" });
+    const [error, setError] = useState("");
+    const add = async (e) => {
+        e.preventDefault();
+        setError("");
+        if (!form.label.trim() || !form.email.trim())
+            return;
+        try {
+            const created = await api.contacts.create({ label: form.label.trim(), email: form.email.trim() });
+            setContacts((c) => [...c, created]);
+            setForm({ label: "", email: "" });
+        } catch (err) { setError(String(err)); }
+    };
+    const remove = async (id) => { await api.contacts.remove(id); setContacts((c) => c.filter((x) => x.id !== id)); };
+    return E("div", {
+        style: { position: "fixed", inset: 0, background: "rgba(0,0,0,0.6)", display: "flex", alignItems: "center", justifyContent: "center", zIndex: 2000, padding: 20 },
+        onClick: onClose,
+    },
+        E("div", { onClick: (e) => e.stopPropagation(), style: { width: "100%", maxWidth: 420 } },
+            React.createElement(Card, null,
+                E("div", { style: { display: "flex", justifyContent: "space-between", alignItems: "baseline", marginBottom: 10 } },
+                    React.createElement(Label, null, "Email contacts"),
+                    E("button", { onClick: onClose, style: { background: "none", border: "none", color: C.inkFaint, cursor: "pointer", fontSize: 16 } }, "\u2715")),
+                contacts.length === 0 ? E("div", { style: { fontSize: 12.5, color: C.inkFaint, marginBottom: 12 } }, "No saved contacts yet.") :
+                    E("div", { style: { marginBottom: 12 } }, contacts.map((c) => (
+                        E("div", { key: c.id, style: { display: "flex", justifyContent: "space-between", alignItems: "center", padding: "6px 0", borderBottom: `1px solid ${C.line}` } },
+                            E("div", null,
+                                E("div", { style: { fontSize: 13 } }, c.label),
+                                E("div", { style: { fontFamily: FONT_MONO, fontSize: 11, color: C.inkFaint } }, c.email)),
+                            E("button", { onClick: () => remove(c.id), style: { background: "none", border: "none", color: C.rust, cursor: "pointer", fontSize: 13 } }, "\u2715"))))),
+                React.createElement("form", { onSubmit: add, style: { display: "grid", gap: 8 } },
+                    React.createElement(Input, { value: form.label, onChange: (e) => setForm({ ...form, label: e.target.value }), placeholder: "Label (e.g. \"My personal email\")" }),
+                    React.createElement(Input, { type: "email", value: form.email, onChange: (e) => setForm({ ...form, email: e.target.value }), placeholder: "Email address" }),
+                    error && E("div", { style: { color: C.rust, fontSize: 12 } }, error),
+                    React.createElement(Btn, { type: "submit" }, "Add contact")))));
+}
+function TopicsTab({ topics, setTopics, me }) {
     const [form, setForm] = useState({ type: "issue", text: "" });
     const [filter, setFilter] = useState("open");
+    const [selected, setSelected] = useState({});
+    const [contacts, setContacts] = useState([]);
+    const [recipient, setRecipient] = useState("self");
+    const [customEmail, setCustomEmail] = useState("");
+    const [sendMsg, setSendMsg] = useState(null);
+    const [sending, setSending] = useState(false);
+    const [showContacts, setShowContacts] = useState(false);
+    useEffect(() => { api.contacts.list().then(setContacts).catch(() => {}); }, []);
     const add = async (e) => {
         e.preventDefault();
         if (!form.text.trim())
@@ -2664,11 +2715,27 @@ function TopicsTab({ topics, setTopics }) {
     };
     const toggle = async (id) => { const updated = await api.topics.toggle(id); setTopics((t) => t.map((x) => (x.id === id ? updated : x))); };
     const remove = async (id) => { await api.topics.remove(id); setTopics((t) => t.filter((x) => x.id !== id)); };
+    const toggleSelect = (id) => setSelected((s) => ({ ...s, [id]: !s[id] }));
+    const selectedIds = Object.keys(selected).filter((id) => selected[id]);
+    const resolvedAddress = recipient === "self" ? ((me && me.email) || "") : recipient === "custom" ? customEmail.trim() : ((contacts.find((c) => c.id === recipient) || {}).email || "");
+    const sendSelected = async () => {
+        if (!selectedIds.length || !resolvedAddress)
+            return;
+        setSending(true);
+        setSendMsg(null);
+        try {
+            const r = await api.topics.sendEmail(resolvedAddress, selectedIds);
+            setSendMsg({ type: "success", text: r.delivered ? "Sent." : "Queued \u2014 email delivery isn't fully set up yet, but this will go out once it is." });
+            setSelected({});
+        }
+        catch (err) { setSendMsg({ type: "error", text: String(err) }); }
+        setSending(false);
+    };
     const typeColor = { issue: C.rust, problem: C.rust, question: C.string };
     const visible = topics.filter((t) => (filter === "all" ? true : t.status === filter));
     return (React.createElement("div", { style: { display: "grid", gap: 14 } },
         React.createElement(Card, null,
-            React.createElement(Label, null, "Add a topic"),
+            React.createElement(Label, null, "Add a topic, question, or problem"),
             React.createElement("form", { onSubmit: add, style: { display: "grid", gap: 10 } },
                 React.createElement("div", { style: { display: "flex", gap: 6 } }, ["issue", "problem", "question"].map((ty) => (React.createElement("button", { type: "button", key: ty, onClick: () => setForm({ ...form, type: ty }), style: {
                         fontSize: 12.5,
@@ -2682,7 +2749,9 @@ function TopicsTab({ topics, setTopics }) {
                     } }, ty)))),
                 React.createElement(Input, { value: form.text, onChange: (e) => setForm({ ...form, text: e.target.value }), placeholder: "Describe it\u2026" }),
                 React.createElement(Btn, { type: "submit" }, "Add topic"))),
-        React.createElement("div", { style: { display: "flex", gap: 8 } }, ["open", "resolved", "all"].map((f) => (React.createElement(Btn, { key: f, variant: filter === f ? "primary" : "ghost", onClick: () => setFilter(f), style: { textTransform: "capitalize" } }, f)))),
+        React.createElement("div", { style: { display: "flex", gap: 8, justifyContent: "space-between", flexWrap: "wrap" } },
+            E("div", { style: { display: "flex", gap: 8 } }, ["open", "resolved", "all"].map((f) => (React.createElement(Btn, { key: f, variant: filter === f ? "primary" : "ghost", onClick: () => setFilter(f), style: { textTransform: "capitalize" } }, f)))),
+            E("button", { onClick: () => setShowContacts(true), style: { background: "none", border: "none", color: C.brass, cursor: "pointer", fontFamily: FONT_MONO, fontSize: 11.5 } }, "Manage email contacts")),
         React.createElement(Card, null, visible.length === 0 ? (React.createElement(Empty, { text: "Nothing here." })) : (visible.map((t) => (React.createElement("div", { key: t.id, style: {
                 display: "flex",
                 justifyContent: "space-between",
@@ -2692,22 +2761,37 @@ function TopicsTab({ topics, setTopics }) {
                 borderBottom: `1px solid ${C.line}`,
                 opacity: t.status === "resolved" ? 0.55 : 1,
             } },
-            React.createElement("div", null,
-                React.createElement("span", { style: {
-                        fontFamily: FONT_MONO,
-                        fontSize: 10,
-                        textTransform: "uppercase",
-                        color: typeColor[t.type],
-                        border: `1px solid ${typeColor[t.type]}66`,
-                        borderRadius: 4,
-                        padding: "1px 6px",
-                        marginRight: 8,
-                    } }, t.type),
-                React.createElement("span", { style: { fontSize: 13.5, textDecoration: t.status === "resolved" ? "line-through" : "none" } }, t.text),
-                React.createElement("div", { style: { fontFamily: FONT_MONO, fontSize: 10.5, color: C.inkFaint, marginTop: 3 } }, t.created)),
+            E("div", { style: { display: "flex", gap: 10, alignItems: "start" } },
+                E("input", { type: "checkbox", checked: !!selected[t.id], onChange: () => toggleSelect(t.id), style: { marginTop: 4 } }),
+                React.createElement("div", null,
+                    React.createElement("span", { style: {
+                            fontFamily: FONT_MONO,
+                            fontSize: 10,
+                            textTransform: "uppercase",
+                            color: typeColor[t.type],
+                            border: `1px solid ${typeColor[t.type]}66`,
+                            borderRadius: 4,
+                            padding: "1px 6px",
+                            marginRight: 8,
+                        } }, t.type),
+                    React.createElement("span", { style: { fontSize: 13.5, textDecoration: t.status === "resolved" ? "line-through" : "none" } }, t.text),
+                    React.createElement("div", { style: { fontFamily: FONT_MONO, fontSize: 10.5, color: C.inkFaint, marginTop: 3 } }, t.created))),
             React.createElement("div", { style: { display: "flex", gap: 6, flexShrink: 0 } },
                 React.createElement(Btn, { variant: "ghost", onClick: () => toggle(t.id), style: { fontSize: 11, padding: "5px 8px" } }, t.status === "open" ? "Resolve" : "Reopen"),
-                React.createElement(Btn, { variant: "danger", onClick: () => remove(t.id), style: { fontSize: 11, padding: "5px 8px" } }, "\u2715")))))))));
+                React.createElement(Btn, { variant: "danger", onClick: () => remove(t.id), style: { fontSize: 11, padding: "5px 8px" } }, "\u2715"))))))),
+        selectedIds.length > 0 && React.createElement(Card, null,
+            React.createElement(Label, null, `Email ${selectedIds.length} selected item${selectedIds.length === 1 ? "" : "s"}`),
+            E("div", { style: { display: "grid", gap: 8 } },
+                E("select", { value: recipient, onChange: (e) => setRecipient(e.target.value), style: { fontSize: 13, padding: "7px 8px", borderRadius: 6, border: `1px solid ${C.line}`, background: C.bg2, color: C.ink } },
+                    E("option", { value: "self" }, `Myself (${(me && me.email) || "\u2014"})`),
+                    contacts.map((c) => E("option", { key: c.id, value: c.id }, `${c.label} \u2014 ${c.email}`)),
+                    E("option", { value: "custom" }, "Custom address\u2026")),
+                recipient === "custom" && React.createElement(Input, { type: "email", value: customEmail, onChange: (e) => setCustomEmail(e.target.value), placeholder: "Email address" }),
+                sendMsg && E("div", { style: { fontSize: 12.5, color: sendMsg.type === "error" ? C.rust : C.sage } }, sendMsg.text),
+                E("div", { style: { display: "flex", gap: 8 } },
+                    React.createElement(Btn, { onClick: sendSelected, disabled: sending || !resolvedAddress }, sending ? "Sending\u2026" : "Send email"),
+                    React.createElement(Btn, { variant: "ghost", onClick: () => setSelected({}) }, "Clear selection")))),
+        showContacts && E(EmailContactsModal, { contacts: contacts, setContacts: setContacts, onClose: () => setShowContacts(false) })));
 }
 /* ---------------------------------------------------------
    GEAR TAB (inventory + maintenance)
