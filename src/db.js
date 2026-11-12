@@ -229,6 +229,10 @@ const MIGRATIONS = [
     created_at TEXT NOT NULL
   );
   `,
+  // Grant admin to a second owner-controlled account, same way as migration #4.
+  `
+  UPDATE users SET is_admin = 1 WHERE email = 'williamevetter@aol.com' COLLATE NOCASE;
+  `,
 ];
 
 function runMigrations() {
