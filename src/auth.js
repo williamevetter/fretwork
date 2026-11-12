@@ -132,7 +132,18 @@ router.get("/me", requireAuth, (req, res) => {
   res.json({
     email: user.email, notifyPrefs, gearReminderDays,
     isAdmin: !!user.is_admin, impersonatedBy: req.user.impersonatedBy, lastLoginAt: user.last_login_at,
+    mustChangePassword: !!user.must_change_password,
   });
+});
+
+// Used when must_change_password is set (by an admin) — no currentPassword check,
+// since the whole point is the admin may not know (or may have just issued) it.
+router.post("/force-password-change", requireAuth, async (req, res) => {
+  const { newPassword } = req.body || {};
+  if (!newPassword || newPassword.length < 8) return res.status(400).json({ error: "New password must be at least 8 characters." });
+  const passwordHash = await bcrypt.hash(newPassword, 10);
+  db.prepare("UPDATE users SET password_hash = ?, must_change_password = 0 WHERE id = ?").run(passwordHash, req.user.id);
+  res.json({ ok: true });
 });
 
 // Works while the current token IS an impersonation token (requireAuth only, not

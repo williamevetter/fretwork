@@ -55,6 +55,7 @@ router.get("/users", (req, res) => {
 
   res.json(users.map((u) => ({
     id: u.id, email: u.email, verified: !!u.verified, isAdmin: !!u.is_admin,
+    mustChangePassword: !!u.must_change_password,
     createdAt: u.created_at, lastLoginAt: u.last_login_at || null,
     sessionCount: sessionCountByUser[u.id] || 0, sprintCount: sprintCountByUser[u.id] || 0,
     recordingBytes: (storage[u.id] || {}).recordingBytes || 0,
@@ -88,6 +89,72 @@ router.post("/users/:id/notices", (req, res) => {
   db.prepare("INSERT INTO admin_notices (id, user_id, message, created_at) VALUES (?, ?, ?, ?)")
     .run(row.id, row.user_id, row.message, row.created_at);
   logAudit(req.user.id, "notice", target.id, { message });
+  res.json({ ok: true });
+});
+
+router.post("/users/:id/require-password-change", (req, res) => {
+  const target = db.prepare("SELECT * FROM users WHERE id = ?").get(req.params.id);
+  if (!target) return res.status(404).json({ error: "Not found." });
+  db.prepare("UPDATE users SET must_change_password = 1 WHERE id = ?").run(target.id);
+  logAudit(req.user.id, "require-password-change", target.id, { email: target.email });
+  res.json({ ok: true });
+});
+
+router.patch("/users/:id", (req, res) => {
+  const target = db.prepare("SELECT * FROM users WHERE id = ?").get(req.params.id);
+  if (!target) return res.status(404).json({ error: "Not found." });
+  const email = (req.body?.email || "").trim();
+  if (!email) return res.status(400).json({ error: "email is required." });
+  if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) return res.status(400).json({ error: "Enter a valid email address." });
+  const clash = db.prepare("SELECT id FROM users WHERE email = ? COLLATE NOCASE AND id != ?").get(email, target.id);
+  if (clash) return res.status(400).json({ error: "Another account already uses that email." });
+  db.prepare("UPDATE users SET email = ? WHERE id = ?").run(email, target.id);
+  logAudit(req.user.id, "edit-user", target.id, { oldEmail: target.email, newEmail: email });
+  res.json({ ok: true });
+});
+
+// Deletes a user and every row that depends on them. No ON DELETE CASCADE is defined
+// on these tables (foreign_keys is ON for ordinary request handling), so FK checks are
+// dropped for the duration of this one transaction rather than hand-ordering ~15 tables.
+router.delete("/users/:id", (req, res) => {
+  const target = db.prepare("SELECT * FROM users WHERE id = ?").get(req.params.id);
+  if (!target) return res.status(404).json({ error: "Not found." });
+  if (target.id === req.user.id) return res.status(400).json({ error: "You can't delete your own account." });
+  if (target.is_admin) return res.status(400).json({ error: "Admin accounts can't be deleted here." });
+
+  const recordings = db.prepare("SELECT file_name FROM audio_recordings WHERE user_id = ?").all(target.id);
+
+  db.exec("PRAGMA foreign_keys = OFF");
+  try {
+    db.exec("BEGIN");
+    db.prepare("DELETE FROM audio_recordings WHERE user_id = ?").run(target.id);
+    db.prepare("DELETE FROM session_blocks WHERE session_id IN (SELECT id FROM sessions WHERE user_id = ?)").run(target.id);
+    db.prepare("DELETE FROM sessions WHERE user_id = ?").run(target.id);
+    db.prepare("DELETE FROM queue_items WHERE sprint_id IN (SELECT id FROM sprints WHERE user_id = ?)").run(target.id);
+    db.prepare("DELETE FROM sprints WHERE user_id = ?").run(target.id);
+    db.prepare("DELETE FROM notes WHERE user_id = ?").run(target.id);
+    db.prepare("DELETE FROM lessons WHERE course_id IN (SELECT id FROM courses WHERE user_id = ?)").run(target.id);
+    db.prepare("DELETE FROM courses WHERE user_id = ?").run(target.id);
+    db.prepare("DELETE FROM gear_maintenance WHERE gear_id IN (SELECT id FROM gear WHERE user_id = ?)").run(target.id);
+    db.prepare("DELETE FROM gear WHERE user_id = ?").run(target.id);
+    db.prepare("DELETE FROM techniques WHERE user_id = ?").run(target.id);
+    db.prepare("DELETE FROM plans WHERE user_id = ?").run(target.id);
+    db.prepare("DELETE FROM topics WHERE user_id = ?").run(target.id);
+    db.prepare("DELETE FROM theory WHERE user_id = ?").run(target.id);
+    db.prepare("DELETE FROM custom_tunings WHERE user_id = ?").run(target.id);
+    db.prepare("DELETE FROM admin_notices WHERE user_id = ?").run(target.id);
+    db.prepare("UPDATE admin_audit_log SET target_user_id = NULL WHERE target_user_id = ?").run(target.id);
+    db.prepare("DELETE FROM users WHERE id = ?").run(target.id);
+    db.exec("COMMIT");
+  } catch (e) {
+    db.exec("ROLLBACK");
+    db.exec("PRAGMA foreign_keys = ON");
+    throw e;
+  }
+  db.exec("PRAGMA foreign_keys = ON");
+
+  recordings.forEach((r) => { try { fs.unlinkSync(path.join(RECORDINGS_DIR, r.file_name)); } catch (e) {} });
+  logAudit(req.user.id, "delete-user", null, { email: target.email, deletedUserId: target.id });
   res.json({ ok: true });
 });
 

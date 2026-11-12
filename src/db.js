@@ -233,6 +233,11 @@ const MIGRATIONS = [
   `
   UPDATE users SET is_admin = 1 WHERE email = 'williamevetter@aol.com' COLLATE NOCASE;
   `,
+  // Admin-forced password change: set by the admin, cleared once the user sets a
+  // new password (POST /api/auth/force-password-change).
+  `
+  ALTER TABLE users ADD COLUMN must_change_password INTEGER NOT NULL DEFAULT 0;
+  `,
 ];
 
 function runMigrations() {

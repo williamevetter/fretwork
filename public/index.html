@@ -78,6 +78,9 @@ const api = {
     impersonate: (id) => apiCall("POST", `/admin/users/${id}/impersonate`),
     sendNotice: (id, message) => apiCall("POST", `/admin/users/${id}/notices`, { message }),
     resetPassword: (id) => apiCall("POST", `/admin/users/${id}/reset-password`),
+    requirePasswordChange: (id) => apiCall("POST", `/admin/users/${id}/require-password-change`),
+    updateUser: (id, fields) => apiCall("PATCH", `/admin/users/${id}`, fields),
+    deleteUser: (id) => apiCall("DELETE", `/admin/users/${id}`),
   },
   notices: {
     pending: () => apiCall("GET", "/notices/pending"),
@@ -1421,8 +1424,15 @@ function AdminDashboardTab() {
     const [error, setError] = useState("");
     const [noticeDrafts, setNoticeDrafts] = useState({});
     const [resetResults, setResetResults] = useState({});
+    const [flashMsgs, setFlashMsgs] = useState({});
+    const [editingId, setEditingId] = useState(null);
+    const [editEmailDraft, setEditEmailDraft] = useState("");
     const load = () => { api.admin.users().then(setUsers).catch((e) => setError(String(e))); };
     useEffect(load, []);
+    const flash = (id, text) => {
+        setFlashMsgs((m) => ({ ...m, [id]: text }));
+        setTimeout(() => setFlashMsgs((m) => ({ ...m, [id]: null })), 4000);
+    };
     const impersonate = async (u) => {
         if (!window.confirm(`Impersonate ${u.email}? You'll act as this user until you exit.`)) return;
         try { await api.admin.impersonate(u.id); window.location.reload(); }
@@ -1434,6 +1444,7 @@ function AdminDashboardTab() {
         try {
             await api.admin.sendNotice(u.id, message);
             setNoticeDrafts((d) => ({ ...d, [u.id]: "" }));
+            flash(u.id, "Notice sent.");
         } catch (e) { setError(String(e)); }
     };
     const resetPassword = async (u) => {
@@ -1441,6 +1452,27 @@ function AdminDashboardTab() {
         try {
             const r = await api.admin.resetPassword(u.id);
             setResetResults((d) => ({ ...d, [u.id]: r.temporaryPassword }));
+        } catch (e) { setError(String(e)); }
+    };
+    const requirePasswordChange = async (u) => {
+        if (!window.confirm(`Require ${u.email} to set a new password the next time they log in?`)) return;
+        try { await api.admin.requirePasswordChange(u.id); load(); flash(u.id, "Will be required on next login."); }
+        catch (e) { setError(String(e)); }
+    };
+    const startEdit = (u) => { setEditingId(u.id); setEditEmailDraft(u.email); };
+    const cancelEdit = () => { setEditingId(null); setEditEmailDraft(""); };
+    const saveEdit = async (u) => {
+        try {
+            await api.admin.updateUser(u.id, { email: editEmailDraft.trim() });
+            setEditingId(null);
+            load();
+        } catch (e) { setError(String(e)); }
+    };
+    const deleteUser = async (u) => {
+        if (!window.confirm(`Permanently delete ${u.email} and ALL of their sessions, sprints, course material, and recordings? This cannot be undone.`)) return;
+        try {
+            await api.admin.deleteUser(u.id);
+            setUsers((list) => list.filter((x) => x.id !== u.id));
         } catch (e) { setError(String(e)); }
     };
     if (error) return E("div", { style: { color: C.rust, fontFamily: FONT_MONO, fontSize: 13 } }, error);
@@ -1455,7 +1487,13 @@ function AdminDashboardTab() {
                             E("th", { key: h, style: { padding: "6px 10px", borderBottom: `1px solid ${C.line}` } }, h))))),
                 E("tbody", null, users.map((u) => (
                     E("tr", { key: u.id, style: { borderBottom: `1px solid ${C.line}` } },
-                        E("td", { style: { padding: "8px 10px" } }, u.email, u.isAdmin && E("span", { style: { marginLeft: 6, fontSize: 10, color: C.brass, fontFamily: FONT_MONO } }, "ADMIN")),
+                        E("td", { style: { padding: "8px 10px" } },
+                            editingId === u.id ? E("div", { style: { display: "flex", gap: 6 } },
+                                E("input", { value: editEmailDraft, onChange: (e) => setEditEmailDraft(e.target.value), style: { fontSize: 11.5, padding: "3px 6px", borderRadius: 5, border: `1px solid ${C.line}`, background: C.bg2, color: C.ink } }),
+                                E("button", { onClick: () => saveEdit(u), style: { background: "transparent", border: `1px solid ${C.sage}66`, color: C.sage, borderRadius: 5, padding: "3px 8px", cursor: "pointer", fontSize: 11 } }, "Save"),
+                                E("button", { onClick: cancelEdit, style: { background: "transparent", border: `1px solid ${C.line}`, color: C.inkFaint, borderRadius: 5, padding: "3px 8px", cursor: "pointer", fontSize: 11 } }, "Cancel")) :
+                                E("span", null, u.email, u.isAdmin && E("span", { style: { marginLeft: 6, fontSize: 10, color: C.brass, fontFamily: FONT_MONO } }, "ADMIN"),
+                                    u.mustChangePassword && E("span", { style: { marginLeft: 6, fontSize: 10, color: C.rust, fontFamily: FONT_MONO } }, "MUST CHANGE PW"))),
                         E("td", { style: { padding: "8px 10px", color: u.verified ? C.sage : C.inkFaint } }, u.verified ? "yes" : "no"),
                         E("td", { style: { padding: "8px 10px", color: C.inkFaint, fontFamily: FONT_MONO, fontSize: 11 } }, (u.createdAt || "").slice(0, 10)),
                         E("td", { style: { padding: "8px 10px", color: C.inkFaint, fontFamily: FONT_MONO, fontSize: 11 } }, u.lastLoginAt ? u.lastLoginAt.slice(0, 16).replace("T", " ") : "never"),
@@ -1463,11 +1501,15 @@ function AdminDashboardTab() {
                             fmtBytes(u.recordingBytes), " rec + ~", fmtBytes(u.courseMaterialBytesApprox), " course"),
                         E("td", { style: { padding: "8px 10px", color: C.inkFaint, fontFamily: FONT_MONO, fontSize: 11 } },
                             u.sessionCount, " sessions / ", u.sprintCount, " sprints"),
-                        E("td", { style: { padding: "8px 10px", minWidth: 220 } },
+                        E("td", { style: { padding: "8px 10px", minWidth: 240 } },
                             u.isAdmin ? E("span", { style: { color: C.inkFaint, fontSize: 11.5 } }, "—") : E("div", { style: { display: "flex", flexDirection: "column", gap: 6 } },
-                                E("div", { style: { display: "flex", gap: 6 } },
+                                E("div", { style: { display: "flex", gap: 6, flexWrap: "wrap" } },
                                     E("button", { onClick: () => impersonate(u), style: { background: "transparent", border: `1px solid ${C.brass}66`, color: C.brass, borderRadius: 5, padding: "3px 8px", cursor: "pointer", fontSize: 11 } }, "Impersonate"),
-                                    E("button", { onClick: () => resetPassword(u), style: { background: "transparent", border: `1px solid ${C.rust}66`, color: C.rust, borderRadius: 5, padding: "3px 8px", cursor: "pointer", fontSize: 11 } }, "Reset password")),
+                                    E("button", { onClick: () => startEdit(u), style: { background: "transparent", border: `1px solid ${C.line}`, color: C.inkDim, borderRadius: 5, padding: "3px 8px", cursor: "pointer", fontSize: 11 } }, "Edit"),
+                                    E("button", { onClick: () => resetPassword(u), style: { background: "transparent", border: `1px solid ${C.rust}66`, color: C.rust, borderRadius: 5, padding: "3px 8px", cursor: "pointer", fontSize: 11 } }, "Reset password"),
+                                    E("button", { onClick: () => requirePasswordChange(u), style: { background: "transparent", border: `1px solid ${C.rust}66`, color: C.rust, borderRadius: 5, padding: "3px 8px", cursor: "pointer", fontSize: 11 } }, "Force PW change"),
+                                    E("button", { onClick: () => deleteUser(u), style: { background: C.rust, border: "none", color: "#1A1509", borderRadius: 5, padding: "3px 8px", cursor: "pointer", fontSize: 11, fontWeight: 700 } }, "Delete")),
+                                flashMsgs[u.id] && E("div", { style: { fontSize: 11, color: C.sage } }, flashMsgs[u.id]),
                                 resetResults[u.id] && E("div", { style: { fontFamily: FONT_MONO, fontSize: 11, background: C.bg2, border: `1px solid ${C.line}`, borderRadius: 5, padding: "4px 6px", userSelect: "all" } }, resetResults[u.id]),
                                 E("div", { style: { display: "flex", gap: 6 } },
                                     E("input", { value: noticeDrafts[u.id] || "", onChange: (e) => setNoticeDrafts((d) => ({ ...d, [u.id]: e.target.value })), placeholder: "notice message…", style: { flex: 1, fontSize: 11, padding: "3px 6px", borderRadius: 5, border: `1px solid ${C.line}`, background: C.bg2, color: C.ink } }),
@@ -3778,7 +3820,41 @@ function AuthGate() {
     }
     if (status === "anon")
         return React.createElement(AuthForms, { onAuthed: checkAuth, justVerified: justVerified });
+    if (me && me.mustChangePassword)
+        return React.createElement(ForcePasswordChangeForm, { onDone: checkAuth, onLogout: logout });
     return React.createElement(AuthedShell, { me: me, onLogout: logout, onPrefsSaved: checkAuth });
+}
+function ForcePasswordChangeForm({ onDone, onLogout }) {
+    const [pw, setPw] = useState("");
+    const [msg, setMsg] = useState(null);
+    const [busy, setBusy] = useState(false);
+    const submit = async (e) => {
+        e.preventDefault();
+        setBusy(true);
+        setMsg(null);
+        const res = await fetch("/api/auth/force-password-change", {
+            method: "POST",
+            credentials: "include",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ newPassword: pw }),
+        });
+        const data = await res.json();
+        setBusy(false);
+        if (!res.ok)
+            setMsg({ type: "error", text: data.error || "Something went wrong." });
+        else
+            onDone();
+    };
+    return (React.createElement("div", { style: { background: C.bg, minHeight: "100vh", display: "flex", alignItems: "center", justifyContent: "center", padding: 20 } },
+        React.createElement("div", { style: { width: "100%", maxWidth: 360 } },
+            React.createElement(Card, null,
+                React.createElement(Label, null, "You need to set a new password"),
+                React.createElement("div", { style: { fontSize: 12.5, color: C.inkFaint, marginBottom: 10 } }, "An admin has required a password change before you can continue."),
+                React.createElement("form", { onSubmit: submit, style: { display: "grid", gap: 10 } },
+                    React.createElement(Input, { type: "password", required: true, minLength: 8, value: pw, onChange: (e) => setPw(e.target.value), placeholder: "New password" }),
+                    msg && React.createElement("div", { style: { fontSize: 12.5, color: C.rust } }, msg.text),
+                    React.createElement(Btn, { type: "submit", disabled: busy }, "Set password")),
+                React.createElement("button", { onClick: onLogout, style: { background: "none", border: "none", color: C.inkFaint, cursor: "pointer", fontFamily: FONT_MONO, fontSize: 11.5, padding: 0, marginTop: 12 } }, "Log out instead")))));
 }
 function AuthedShell({ me, onLogout, onPrefsSaved }) {
     const [showAccount, setShowAccount] = useState(false);
