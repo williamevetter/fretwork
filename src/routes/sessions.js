@@ -25,6 +25,7 @@ function recordingRow(row) {
   return {
     id: row.id, fileName: row.file_name, mimeType: row.mime_type,
     durationSeconds: row.duration_seconds, createdAt: row.created_at,
+    blockId: row.block_id || null, label: row.label || "",
   };
 }
 // Queries recordings itself (by row.id) rather than taking them as a parameter —
@@ -37,7 +38,7 @@ function sessionWithBlocks(row, blockRows) {
   });
   const recordings = db.prepare("SELECT * FROM audio_recordings WHERE session_id = ? ORDER BY created_at").all(row.id);
   return {
-    id: row.id, date: row.date, sprintId: row.sprint_id, notes: row.notes || "",
+    id: row.id, date: row.date, sprintId: row.sprint_id, notes: row.notes || "", isAdHoc: !!row.is_ad_hoc,
     duration, techniqueTimes, blocks: blockRows.map(blockRow), recordings: recordings.map(recordingRow),
   };
 }
@@ -60,9 +61,12 @@ router.post("/", (req, res) => {
   const date = req.body?.date;
   if (!date) return res.status(400).json({ error: "date is required." });
   const now = nowISO();
-  const row = { id: uid(), date, sprint_id: req.body?.sprintId || null, notes: req.body?.notes || "", created_at: now, updated_at: now };
-  db.prepare("INSERT INTO sessions (id, user_id, date, sprint_id, notes, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)")
-    .run(row.id, req.user.id, row.date, row.sprint_id, row.notes, row.created_at, row.updated_at);
+  const row = {
+    id: uid(), date, sprint_id: req.body?.sprintId || null, notes: req.body?.notes || "",
+    is_ad_hoc: req.body?.isAdHoc ? 1 : 0, created_at: now, updated_at: now,
+  };
+  db.prepare("INSERT INTO sessions (id, user_id, date, sprint_id, notes, is_ad_hoc, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)")
+    .run(row.id, req.user.id, row.date, row.sprint_id, row.notes, row.is_ad_hoc, row.created_at, row.updated_at);
   res.json(sessionWithBlocks(row, []));
 });
 
@@ -76,9 +80,10 @@ router.patch("/:id", (req, res) => {
   const notes = req.body?.notes !== undefined ? req.body.notes : row.notes;
   const date = req.body?.date !== undefined ? req.body.date : row.date;
   const sprint_id = req.body?.sprintId !== undefined ? req.body.sprintId : row.sprint_id;
+  const is_ad_hoc = req.body?.isAdHoc !== undefined ? (req.body.isAdHoc ? 1 : 0) : row.is_ad_hoc;
   const updated_at = nowISO();
-  db.prepare("UPDATE sessions SET notes = ?, date = ?, sprint_id = ?, updated_at = ? WHERE id = ?").run(notes, date, sprint_id, updated_at, row.id);
-  res.json(sessionWithBlocks({ ...row, notes, date, sprint_id, updated_at }, blocksStmt.all(row.id)));
+  db.prepare("UPDATE sessions SET notes = ?, date = ?, sprint_id = ?, is_ad_hoc = ?, updated_at = ? WHERE id = ?").run(notes, date, sprint_id, is_ad_hoc, updated_at, row.id);
+  res.json(sessionWithBlocks({ ...row, notes, date, sprint_id, is_ad_hoc, updated_at }, blocksStmt.all(row.id)));
 });
 
 router.delete("/:id", (req, res) => {
@@ -87,8 +92,10 @@ router.delete("/:id", (req, res) => {
   const recordingFiles = db.prepare("SELECT file_name FROM audio_recordings WHERE session_id = ?").all(row.id);
   db.exec("BEGIN");
   try {
-    db.prepare("DELETE FROM session_blocks WHERE session_id = ?").run(row.id);
+    // audio_recordings.block_id references session_blocks, so recordings must go
+    // first — deleting blocks while a recording still points at one violates the FK.
     db.prepare("DELETE FROM audio_recordings WHERE session_id = ?").run(row.id);
+    db.prepare("DELETE FROM session_blocks WHERE session_id = ?").run(row.id);
     db.prepare("DELETE FROM sessions WHERE id = ?").run(row.id);
     db.exec("COMMIT");
   } catch (e) {
@@ -102,8 +109,12 @@ router.delete("/:id", (req, res) => {
 router.post("/:id/recordings", (req, res) => {
   const session = findSessionForUser(req.params.id, req.user.id);
   if (!session) return res.status(404).json({ error: "Not found." });
-  const { mimeType, dataBase64, durationSeconds } = req.body || {};
+  const { mimeType, dataBase64, durationSeconds, blockId, label } = req.body || {};
   if (!mimeType || !dataBase64) return res.status(400).json({ error: "mimeType and dataBase64 are required." });
+  if (blockId) {
+    const block = db.prepare("SELECT id FROM session_blocks WHERE id = ? AND session_id = ?").get(blockId, session.id);
+    if (!block) return res.status(400).json({ error: "blockId does not belong to this session." });
+  }
   const ext = (mimeType.split("/")[1] || "webm").split(";")[0];
   const id = uid();
   const fileName = `${id}.${ext}`;
@@ -115,9 +126,9 @@ router.post("/:id/recordings", (req, res) => {
   }
   fs.writeFileSync(path.join(RECORDINGS_DIR, fileName), buffer);
   db.prepare(`
-    INSERT INTO audio_recordings (id, session_id, user_id, file_name, mime_type, duration_seconds, created_at)
-    VALUES (?, ?, ?, ?, ?, ?, ?)
-  `).run(id, session.id, req.user.id, fileName, mimeType, durationSeconds != null ? Number(durationSeconds) : null, nowISO());
+    INSERT INTO audio_recordings (id, session_id, user_id, file_name, mime_type, duration_seconds, block_id, label, created_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+  `).run(id, session.id, req.user.id, fileName, mimeType, durationSeconds != null ? Number(durationSeconds) : null, blockId || null, label || null, nowISO());
   res.json(sessionWithBlocks(session, blocksStmt.all(session.id)));
 });
 

@@ -254,6 +254,15 @@ const MIGRATIONS = [
   `
   ALTER TABLE users ADD COLUMN name TEXT;
   `,
+  // is_ad_hoc: suppresses the Planned vs Actual comparison in Session History for
+  // sessions that were never built from a plan, so there's nothing honest to compare to.
+  // block_id/label on recordings: lets a recording be attached to one specific block
+  // (not just the whole session) and carries its generated Date-Time-Sprint-Topic-note name.
+  `
+  ALTER TABLE sessions ADD COLUMN is_ad_hoc INTEGER NOT NULL DEFAULT 0;
+  ALTER TABLE audio_recordings ADD COLUMN block_id TEXT REFERENCES session_blocks(id);
+  ALTER TABLE audio_recordings ADD COLUMN label TEXT;
+  `,
 ];
 
 function runMigrations() {

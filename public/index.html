@@ -625,10 +625,11 @@ function Empty({ text }) {
     return (React.createElement("div", { style: { padding: "28px 12px", textAlign: "center", color: C.inkFaint, fontSize: 13.5 } }, text));
 }
 function fmtMin(min) {
-    if (min < 60)
-        return `${min}m`;
-    const h = Math.floor(min / 60);
-    const m = min % 60;
+    const whole = Math.round(Number(min) || 0);
+    if (whole < 60)
+        return `${whole}m`;
+    const h = Math.floor(whole / 60);
+    const m = whole % 60;
     return m ? `${h}h ${m}m` : `${h}h`;
 }
 function uid() {
@@ -861,6 +862,7 @@ const TABS = [
     { id: "dashboard", label: "Overview" },
     { id: "sessions", label: "Sessions" },
     { id: "search", label: "Search Sessions" },
+    { id: "recordings", label: "Recordings" },
     { id: "sprints", label: "Sprints" },
     { id: "techniques", label: "Techniques" },
     { id: "topics", label: "Topics & Questions" },
@@ -1393,6 +1395,7 @@ function App({ me }) {
             tab === "dashboard" && React.createElement(Dashboard, { data: data, setTab: setTab, sprints: sprints }),
             tab === "sessions" && (React.createElement(SessionsTab, { data: data, sessions: sessions, setSessions: setSessions, plans: plans, setPlans: setPlans, coursesIndex: coursesIndex, sprints: sprints, editSessionId: editSessionId, setEditSessionId: setEditSessionId })),
             tab === "search" && E(SessionsSearchTab, { sessions: sessions, techniques: techniques, sprints: sprints, onEditSession: (id) => { setEditSessionId(id); setTab("sessions"); } }),
+            tab === "recordings" && E(RecordingsTab, { sessions: sessions, setSessions: setSessions, sprints: sprints }),
             tab === "sprints" && E(SprintsTab, { sessions: sessions, setSessions: setSessions, sprints: sprints, setSprints: setSprints, coursesIndex: coursesIndex, setTab: setTab }),
             tab === "techniques" && React.createElement(TechniquesTab, { sessions: sessions, techniques: techniques, setTechniques: setTechniques }),
             tab === "topics" && React.createElement(TopicsTab, { topics: topics, setTopics: setTopics, me: me }),
@@ -1820,28 +1823,79 @@ function generateSprintRecap(sprint, allSessions) {
 const MINUTE_PRESETS = [5, 10, 15, 20, 30, 45, 60];
 // Shared between SessionsTab's "Session history" list and SessionsSearchTab —
 // one rendering of "here's a logged session" rather than two copies to keep in sync.
+// Table-friendly text: a blank-line-separated block that looks like a markdown pipe
+// table (a header row, then a "---|---" separator row) renders as a real <table>;
+// everything else renders as plain preformatted text. No markdown library needed —
+// this is the one table shape anyone is likely to type by hand.
+function parseMarkdownTable(block) {
+    const lines = block.split("\n").filter((l) => l.trim());
+    if (lines.length < 2 || !lines[0].includes("|") || !/^[\s|:-]+$/.test(lines[1]))
+        return null;
+    const splitRow = (l) => l.trim().replace(/^\||\|$/g, "").split("|").map((c) => c.trim());
+    return { header: splitRow(lines[0]), rows: lines.slice(2).map(splitRow) };
+}
+function renderTableFriendlyText(text) {
+    if (!text)
+        return null;
+    return text.split(/\n\s*\n/).map((block, i) => {
+        const table = parseMarkdownTable(block);
+        if (!table)
+            return E("div", { key: i, style: { whiteSpace: "pre-wrap" } }, block);
+        return E("table", { key: i, style: { width: "100%", borderCollapse: "collapse", fontSize: 12.5, margin: "4px 0" } },
+            E("thead", null, E("tr", null, table.header.map((h, hi) => E("th", {
+                key: hi, style: { textAlign: "left", padding: "4px 8px", borderBottom: `1px solid ${C.line}`, color: C.inkFaint, fontFamily: FONT_MONO, fontSize: 10.5 },
+            }, h)))),
+            E("tbody", null, table.rows.map((row, ri) => E("tr", { key: ri }, row.map((cell, ci) => E("td", {
+                key: ci, style: { padding: "4px 8px", borderBottom: `1px solid ${C.line}` },
+            }, cell))))));
+    });
+}
+function slugForName(s) {
+    return String(s || "").trim().replace(/[^a-zA-Z0-9]+/g, "-").replace(/^-+|-+$/g, "") || "Untitled";
+}
+// Date-Time-Sprint-Topic-(user defined), e.g. 2026-11-13-1430-2026-11-01-AlternatePicking-warmup-notes
+function buildRecordingLabel({ sprint, topic, userText }) {
+    const now = new Date();
+    const date = now.toISOString().slice(0, 10);
+    const time = now.toTimeString().slice(0, 5).replace(":", "");
+    const sprintPart = sprint ? slugForName(sprint.startDate) : "NoSprint";
+    return [date, time, sprintPart, slugForName(topic), userText ? slugForName(userText) : ""].filter(Boolean).join("-");
+}
+function extFromMime(mime) {
+    return "." + ((mime || "").split("/")[1] || "webm").split(";")[0];
+}
+function RecordingRow({ r, onDelete }) {
+    return E("div", { style: { display: "flex", alignItems: "center", gap: 8 } },
+        E("audio", { controls: true, preload: "none", src: api.recordings.fileUrl(r.id), style: { height: 28, maxWidth: 240 } }),
+        E("a", {
+            href: api.recordings.fileUrl(r.id), download: (r.label || r.id) + extFromMime(r.mimeType),
+            title: "Download", style: { color: C.brass, fontSize: 13, textDecoration: "none" },
+        }, "⬇"),
+        onDelete && E(Btn, { variant: "danger", style: { fontSize: 11, padding: "4px 7px" }, onClick: () => onDelete(r) }, "✕"));
+}
 function SessionSummaryRow({ s, techniques, onEdit, onDelete }) {
+    const plannedTotal = (s.blocks || []).reduce((sum, b) => sum + (b.plannedMinutes != null ? Number(b.plannedMinutes) : 0), 0);
     return E("div", { key: s.id, style: { padding: "10px 0", borderBottom: `1px solid ${C.line}` } },
         E("div", { style: { display: "flex", justifyContent: "space-between", alignItems: "start" } },
             E("div", null,
                 E("div", { style: { display: "flex", gap: 8, alignItems: "baseline" } },
                     E("span", { style: { fontFamily: FONT_MONO, fontSize: 11, color: C.brass } }, s.date),
-                    E("span", { style: { fontFamily: FONT_MONO, fontSize: 11, color: C.inkFaint } }, fmtMin(Math.round(s.duration)))),
+                    E("span", { style: { fontFamily: FONT_MONO, fontSize: 11, color: C.inkFaint } }, fmtMin(s.duration)),
+                    s.isAdHoc && E("span", { style: { fontSize: 10, fontFamily: FONT_MONO, color: C.inkFaint, border: `1px solid ${C.line}`, borderRadius: 4, padding: "0 5px" } }, "AD-HOC")),
+                !s.isAdHoc && E("div", { style: { fontSize: 11.5, color: C.inkFaint, marginTop: 2 } },
+                    "Planned ", fmtMin(plannedTotal), " · Actual ", fmtMin(s.duration)),
                 Object.keys(s.techniqueTimes || {}).length > 0 && E("div", { style: { fontSize: 11.5, color: C.inkFaint, marginTop: 4 } },
                     Object.entries(s.techniqueTimes).map(([id, min]) => {
                         const t = techniques.find((x) => x.id === id);
-                        return t ? `${t.name} (${fmtMin(Math.round(min))})` : null;
+                        return t ? `${t.name} (${fmtMin(min)})` : null;
                     }).filter(Boolean).join(" · ")),
                 (s.lessonRefs || []).length > 0 && E("div", { style: { fontSize: 11.5, color: C.brassDim, marginTop: 2 } },
                     "📖 ", s.lessonRefs.map((r) => r.label).join(" · ")),
-                s.notes && E("div", { style: { fontSize: 13, color: C.inkDim, marginTop: 4 } }, s.notes),
+                s.notes && E("div", { style: { fontSize: 13, color: C.inkDim, marginTop: 4 } }, renderTableFriendlyText(s.notes)),
                 (s.blocks || []).length > 0 && E("div", { style: { fontSize: 11.5, color: C.inkFaint, marginTop: 4 } },
                     s.blocks.length, " block", s.blocks.length === 1 ? "" : "s", s.sprintId ? " · sprint session" : ""),
                 (s.recordings || []).length > 0 && E("div", { style: { display: "grid", gap: 4, marginTop: 6 } },
-                    s.recordings.map((r) => E("audio", {
-                        key: r.id, controls: true, preload: "none", src: api.recordings.fileUrl(r.id),
-                        style: { height: 28, maxWidth: 260 },
-                    })))),
+                    s.recordings.map((r) => E(RecordingRow, { key: r.id, r: r })))),
             E("div", { style: { display: "flex", gap: 6, flexShrink: 0 } },
                 onEdit && E(Btn, { variant: "ghost", onClick: () => onEdit(s), style: { fontSize: 11.5, padding: "6px 9px" } }, "Edit"),
                 onDelete && E(Btn, { variant: "danger", onClick: () => onDelete(s.id), style: { fontSize: 11.5, padding: "6px 9px" } }, "✕"))));
@@ -1866,15 +1920,29 @@ function SessionsTab({ data, sessions, setSessions, plans, setPlans, coursesInde
         setEditSessionId(null);
     }, [editSessionId]);
     const [timeAvailable, setTimeAvailable] = useState(30);
+    const [adHocChecked, setAdHocChecked] = useState(false);
     const [blockForm, setBlockForm] = useState(null); // {editingId, category, material, techniqueId, plannedMinutes, actualMinutes, completed, important, queueItemId, notes}
     const [customMaterial, setCustomMaterial] = useState("");
     const [customCategory, setCustomCategory] = useState("Repeat miscellaneous");
     const [busy, setBusy] = useState(false);
     const [, forceTick] = useState(0);
+    const [notesDraft, setNotesDraft] = useState("");
+    const [recordNoteDrafts, setRecordNoteDrafts] = useState({}); // keyed by blockId, or "session" for the whole-session recorder
+    const [recordingTarget, setRecordingTarget] = useState(null); // { blockId, topic } while a recording is in progress
 
     const draft = sessions.find((s) => s.id === draftSessionId) || null;
     const runningBlock = draft && (draft.blocks || []).find((b) => b.timerStartedAt);
     const mergeSession = (updated) => setSessions((all) => all.map((s) => (s.id === updated.id ? updated : s)));
+
+    useEffect(() => { setNotesDraft((draft && draft.notes) || ""); }, [draft && draft.id]);
+    const saveNotes = async () => {
+        if (!draft || notesDraft === draft.notes) return;
+        mergeSession(await api.sessions.patch(draft.id, { notes: notesDraft }));
+    };
+    const toggleAdHoc = async (checked) => {
+        if (!draft) { setAdHocChecked(checked); return; }
+        mergeSession(await api.sessions.patch(draft.id, { isAdHoc: checked }));
+    };
 
     // Resume a timer left running across a reload/crash — only takes over when nothing
     // is already open, so it never fights a user who's deliberately looking at something else.
@@ -1928,7 +1996,7 @@ function SessionsTab({ data, sessions, setSessions, plans, setPlans, coursesInde
 
     const ensureDraftSession = async () => {
         if (draft) return draft.id;
-        const created = await api.sessions.create({ date: todayISO(), sprintId: sprint ? sprint.id : null });
+        const created = await api.sessions.create({ date: todayISO(), sprintId: sprint ? sprint.id : null, isAdHoc: adHocChecked });
         setSessions((all) => [created, ...all]);
         setDraftSessionId(created.id);
         return created.id;
@@ -2018,7 +2086,10 @@ function SessionsTab({ data, sessions, setSessions, plans, setPlans, coursesInde
     const [isRecording, setIsRecording] = useState(false);
     const [recordingError, setRecordingError] = useState("");
     const [uploadingRecording, setUploadingRecording] = useState(false);
-    const startRecording = async () => {
+    // target: { blockId, topic } for one block's recording, or null for the whole session
+    // (stored as blockId: null, topic "Session"). Naming built on stop, from whatever
+    // note was typed into recordNoteDrafts[blockId || "session"] at that point.
+    const startRecording = async (target) => {
         setRecordingError("");
         if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
             setRecordingError("This browser doesn't expose microphone access.");
@@ -2031,6 +2102,7 @@ function SessionsTab({ data, sessions, setSessions, plans, setPlans, coursesInde
             recorder.ondataavailable = (e) => { if (e.data.size > 0) chunks.push(e.data); };
             recorder.start();
             recorderRef.current = { recorder, chunks, stream, startedAt: Date.now() };
+            setRecordingTarget(target || { blockId: null, topic: "Session" });
             setIsRecording(true);
         } catch (e) {
             setRecordingError(e.message || "Couldn't access the microphone.");
@@ -2038,6 +2110,7 @@ function SessionsTab({ data, sessions, setSessions, plans, setPlans, coursesInde
     };
     const stopRecording = async () => {
         const rec = recorderRef.current;
+        const target = recordingTarget || { blockId: null, topic: "Session" };
         if (!rec) return;
         setIsRecording(false);
         setUploadingRecording(true);
@@ -2056,13 +2129,17 @@ function SessionsTab({ data, sessions, setSessions, plans, setPlans, coursesInde
             });
             const dataBase64 = dataUrl.split(",")[1];
             const sessionId = await ensureDraftSession();
-            const updated = await api.sessions.addRecording(sessionId, { mimeType: blob.type, dataBase64, durationSeconds });
+            const draftKey = target.blockId || "session";
+            const label = buildRecordingLabel({ sprint, topic: target.topic, userText: recordNoteDrafts[draftKey] });
+            const updated = await api.sessions.addRecording(sessionId, { mimeType: blob.type, dataBase64, durationSeconds, blockId: target.blockId || undefined, label });
             mergeSession(updated);
+            setRecordNoteDrafts((d) => ({ ...d, [draftKey]: "" }));
         } catch (e) {
             setRecordingError(e.message || "Couldn't save that recording.");
         } finally {
             recorderRef.current = null;
             setUploadingRecording(false);
+            setRecordingTarget(null);
         }
     };
     const toggleLesson = (setter, lesson) => {
@@ -2085,15 +2162,17 @@ function SessionsTab({ data, sessions, setSessions, plans, setPlans, coursesInde
     };
     const deleteSession = async (id) => { await api.sessions.remove(id); setSessions((s) => s.filter((x) => x.id !== id)); };
     const deletePlan = async (id) => { await api.plans.remove(id); setPlans((p) => p.filter((x) => x.id !== id)); };
-    const convertPlan = (p) => {
-        setMode("log");
-        setForm({
+    // "Start session now": opens the plan as a live session you can record/time against,
+    // logged under today's date (when it's actually practiced), not the plan's target date.
+    const startPlanNow = async (p) => {
+        const created = await api.sessions.create({
             date: todayISO(),
-            duration: 30,
+            sprintId: sprint ? sprint.id : null,
             notes: `Plan: ${p.goals}${p.content ? " — " + p.content : ""}`,
-            techMin: Object.fromEntries((p.techniques || []).map((id) => [id, 0])),
-            lessonRefs: p.lessonRefs || [],
         });
+        setSessions((all) => [created, ...all]);
+        setMode("log");
+        setDraftSessionId(created.id);
     };
     const runGenerate = () => {
         const gen = generatePlan(data, coursesIndex);
@@ -2119,33 +2198,52 @@ function SessionsTab({ data, sessions, setSessions, plans, setPlans, coursesInde
                                 style: { fontSize: 15, padding: "14px 18px", minWidth: 60 },
                             }, m)),
                             E(Input, { type: "number", min: "1", value: timeAvailable, onChange: (e) => setTimeAvailable(Number(e.target.value) || 0), style: { width: 90, fontSize: 15 } }))),
+                    E("label", { style: { display: "flex", alignItems: "center", gap: 8, fontSize: 13 } },
+                        E("input", { type: "checkbox", checked: adHocChecked, onChange: (e) => setAdHocChecked(e.target.checked) }),
+                        "This is an ad-hoc session (no plan to compare against — hides Planned vs Actual in history)"),
                     E("div", { style: { display: "flex", gap: 8, flexWrap: "wrap" } },
                         E(Btn, { onClick: startAllocatedDraft, disabled: busy, style: { fontSize: 15, padding: "14px 20px" } }, "Start with suggested plan"),
                         E(Btn, { variant: "ghost", onClick: startBlankDraft, disabled: busy, style: { fontSize: 15, padding: "14px 20px" } }, "Start blank")))
-                    : E(Btn, { onClick: startBlankDraft, disabled: busy, style: { fontSize: 15, padding: "14px 20px" } }, "Start blank")),
+                    : E("div", { style: { display: "grid", gap: 10 } },
+                        E("label", { style: { display: "flex", alignItems: "center", gap: 8, fontSize: 13 } },
+                            E("input", { type: "checkbox", checked: adHocChecked, onChange: (e) => setAdHocChecked(e.target.checked) }),
+                            "This is an ad-hoc session (no plan to compare against — hides Planned vs Actual in history)"),
+                        E(Btn, { onClick: startBlankDraft, disabled: busy, style: { fontSize: 15, padding: "14px 20px" } }, "Start blank"))),
 
             draft && E(Card, null,
                 E("div", { style: { display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: 8 } },
                     E("div", { style: { display: "flex", gap: 10, alignItems: "center" } },
                         E("span", { style: { fontFamily: FONT_MONO, fontSize: 12, color: C.brass } }, fmtDate(draft.date)),
                         draft.sprintId && E("span", { style: { fontFamily: FONT_MONO, fontSize: 11, color: C.brass } }, "sprint session")),
-                    E("span", { style: { fontFamily: FONT_MONO, fontSize: 13, color: C.inkDim } }, fmtMin(Math.round(draft.duration)), " logged so far"))),
+                    E("span", { style: { fontFamily: FONT_MONO, fontSize: 13, color: C.inkDim } }, fmtMin(draft.duration), " logged so far")),
+                E("label", { style: { display: "flex", alignItems: "center", gap: 8, fontSize: 12.5, color: C.inkFaint, marginTop: 8 } },
+                    E("input", { type: "checkbox", checked: !!draft.isAdHoc, onChange: (e) => toggleAdHoc(e.target.checked) }),
+                    "Ad-hoc session (hide Planned vs Actual for this one)")),
 
             draft && E(Card, null,
-                E(Label, null, "Audio"),
+                E(Label, null, "Notes"),
+                E(TextArea, {
+                    rows: 4, value: notesDraft, onChange: (e) => setNotesDraft(e.target.value), onBlur: saveNotes,
+                    placeholder: "Session notes… pipe tables render automatically, e.g.\n| Piece | Measures |\n|---|---|\n| Etude 3 | 1-16 |",
+                })),
+
+            draft && E(Card, null,
+                E(Label, null, "Audio — whole session"),
                 E("div", { style: { display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" } },
-                    isRecording
+                    (!isRecording || (recordingTarget && recordingTarget.blockId)) && E(Input, {
+                        value: recordNoteDrafts.session || "", onChange: (e) => setRecordNoteDrafts((d) => ({ ...d, session: e.target.value })),
+                        placeholder: "Optional note for the recording name", style: { flex: "1 1 180px" },
+                    }),
+                    isRecording && (!recordingTarget || !recordingTarget.blockId)
                         ? E(Btn, { variant: "danger", onClick: stopRecording }, "■ Stop recording")
-                        : E(Btn, { variant: "ghost", onClick: startRecording, disabled: uploadingRecording }, "🎙 Record"),
+                        : E(Btn, { variant: "ghost", onClick: () => startRecording({ blockId: null, topic: "Session" }), disabled: uploadingRecording || isRecording }, "🎙 Record"),
                     uploadingRecording && E("span", { style: { fontSize: 12.5, color: C.inkFaint } }, "Saving…")),
                 recordingError && E("div", { style: { color: C.rust, fontSize: 12.5, marginTop: 6 } }, recordingError),
-                (draft.recordings || []).length > 0 && E("div", { style: { display: "grid", gap: 6, marginTop: 10 } },
-                    draft.recordings.map((r) => E("div", { key: r.id, style: { display: "flex", alignItems: "center", gap: 8 } },
-                        E("audio", { controls: true, preload: "none", src: api.recordings.fileUrl(r.id), style: { height: 28, maxWidth: 260 } }),
-                        E(Btn, {
-                            variant: "danger", style: { fontSize: 11, padding: "4px 7px" },
-                            onClick: async () => { await api.recordings.remove(r.id); setSessions(await api.sessions.list()); },
-                        }, "✕"))))),
+                (draft.recordings || []).filter((r) => !r.blockId).length > 0 && E("div", { style: { display: "grid", gap: 6, marginTop: 10 } },
+                    draft.recordings.filter((r) => !r.blockId).map((r) => E(RecordingRow, {
+                        key: r.id, r: r,
+                        onDelete: async () => { await api.recordings.remove(r.id); mergeSession({ ...draft, recordings: draft.recordings.filter((x) => x.id !== r.id) }); },
+                    })))),
 
             runningBlock && E(Card, { style: { border: `1px solid ${C.brass}` } },
                 E("div", { style: { display: "flex", justifyContent: "space-between", alignItems: "baseline" } },
@@ -2178,7 +2276,20 @@ function SessionsTab({ data, sessions, setSessions, plans, setPlans, coursesInde
                     }, m)),
                     E(Input, { type: "number", min: "0", value: b.actualMinutes, onChange: (e) => setBlockMinutes(b.id, Number(e.target.value) || 0), style: { width: 72, fontSize: 14 } }),
                     E("label", { style: { display: "flex", alignItems: "center", gap: 6, fontSize: 13, marginLeft: "auto" } },
-                        E("input", { type: "checkbox", checked: b.completed, onChange: () => toggleBlockCompleted(b) }), "Done")))),
+                        E("input", { type: "checkbox", checked: b.completed, onChange: () => toggleBlockCompleted(b) }), "Done")),
+                E("div", { style: { display: "flex", gap: 6, flexWrap: "wrap", marginTop: 8, alignItems: "center", paddingTop: 8, borderTop: `1px solid ${C.line}` } },
+                    (!isRecording || (recordingTarget && recordingTarget.blockId !== b.id)) && E(Input, {
+                        value: recordNoteDrafts[b.id] || "", onChange: (e) => setRecordNoteDrafts((d) => ({ ...d, [b.id]: e.target.value })),
+                        placeholder: "Optional note for the recording name", style: { flex: "1 1 160px", fontSize: 12.5 },
+                    }),
+                    isRecording && recordingTarget && recordingTarget.blockId === b.id
+                        ? E(Btn, { variant: "danger", onClick: stopRecording, style: { fontSize: 12, padding: "6px 10px" } }, "■ Stop recording")
+                        : E(Btn, { variant: "ghost", onClick: () => startRecording({ blockId: b.id, topic: b.material }), disabled: uploadingRecording || isRecording, style: { fontSize: 12, padding: "6px 10px" } }, "🎙 Record")),
+                (draft.recordings || []).filter((r) => r.blockId === b.id).length > 0 && E("div", { style: { display: "grid", gap: 6, marginTop: 8 } },
+                    draft.recordings.filter((r) => r.blockId === b.id).map((r) => E(RecordingRow, {
+                        key: r.id, r: r,
+                        onDelete: async () => { await api.recordings.remove(r.id); mergeSession({ ...draft, recordings: draft.recordings.filter((x) => x.id !== r.id) }); },
+                    }))))),
 
             draft && !runningBlock && E(Card, null,
                 E(Label, null, "Start something"),
@@ -2281,13 +2392,13 @@ function SessionsTab({ data, sessions, setSessions, plans, setPlans, coursesInde
                     React.createElement("div", null,
                         React.createElement("div", { style: { fontFamily: FONT_MONO, fontSize: 11, color: C.brass } }, p.date),
                         React.createElement("div", { style: { fontWeight: 600, fontSize: 14 } }, p.goals),
-                        p.content && React.createElement("div", { style: { fontSize: 13, color: C.inkDim, marginTop: 2 } }, p.content),
+                        p.content && React.createElement("div", { style: { fontSize: 13, color: C.inkDim, marginTop: 2 } }, renderTableFriendlyText(p.content)),
                         p.techniques.length > 0 && (React.createElement("div", { style: { fontSize: 11.5, color: C.inkFaint, marginTop: 4 } }, p.techniques.map((id) => { var _a; return (_a = data.techniques.find((t) => t.id === id)) === null || _a === void 0 ? void 0 : _a.name; }).filter(Boolean).join(" · "))),
                         (p.lessonRefs || []).length > 0 && (React.createElement("div", { style: { fontSize: 11.5, color: C.brassDim, marginTop: 2 } },
                             "\uD83D\uDCD6 ",
                             p.lessonRefs.map((r) => r.label).join(" · ")))),
                     React.createElement("div", { style: { display: "flex", gap: 6, flexShrink: 0 } },
-                        React.createElement(Btn, { variant: "ghost", onClick: () => convertPlan(p), style: { fontSize: 11.5, padding: "6px 9px" } }, "Log"),
+                        React.createElement(Btn, { variant: "ghost", onClick: () => startPlanNow(p), style: { fontSize: 11.5, padding: "6px 9px" } }, "▶ Start session now"),
                         React.createElement(Btn, { variant: "danger", onClick: () => deletePlan(p.id), style: { fontSize: 11.5, padding: "6px 9px" } }, "\u2715")))))))),
         React.createElement(Card, null,
             React.createElement(Label, null, "Session history"),
@@ -2326,7 +2437,68 @@ function SessionsSearchTab({ sessions, techniques, sprints, onEditSession }) {
                                     E("span", null,
                                         E("span", { style: { fontFamily: FONT_MONO, fontSize: 10.5, color: C.inkFaint, textTransform: "uppercase", marginRight: 6 } }, b.category),
                                         b.material, b.completed ? "" : " (not marked done)"),
-                                    E("span", { style: { fontFamily: FONT_MONO, color: C.inkFaint } }, fmtMin(Math.round(b.actualMinutes))))))))));
+                                    E("span", { style: { fontFamily: FONT_MONO, color: C.inkFaint } }, fmtMin(b.actualMinutes)))))))));
+}
+/* ---------------------------------------------------------
+   RECORDINGS TAB — every recording across every session, searchable by date,
+   name/topic, sprint, or free text. Derived entirely from `sessions`, which
+   already carries each recording with its owning session/block context.
+--------------------------------------------------------- */
+function RecordingsTab({ sessions, setSessions, sprints }) {
+    const [q, setQ] = useState("");
+    const [dateFilter, setDateFilter] = useState("");
+    const [sprintFilter, setSprintFilter] = useState("all");
+    const rows = useMemo(() => {
+        const out = [];
+        sessions.forEach((s) => {
+            const blocksById = Object.fromEntries((s.blocks || []).map((b) => [b.id, b]));
+            (s.recordings || []).forEach((r) => {
+                out.push({
+                    ...r, sessionId: s.id, sessionDate: s.date, sprintId: s.sprintId,
+                    blockMaterial: r.blockId ? ((blocksById[r.blockId] || {}).material || "") : "",
+                });
+            });
+        });
+        return out.sort((a, b) => (a.createdAt < b.createdAt ? 1 : -1));
+    }, [sessions]);
+    const filtered = rows.filter((r) => {
+        if (dateFilter && r.sessionDate !== dateFilter) return false;
+        if (sprintFilter === "none" && r.sprintId) return false;
+        if (sprintFilter !== "all" && sprintFilter !== "none" && r.sprintId !== sprintFilter) return false;
+        if (q.trim()) {
+            const needle = q.trim().toLowerCase();
+            const haystack = [r.label, r.blockMaterial, r.sessionDate].filter(Boolean).join(" ").toLowerCase();
+            if (!haystack.includes(needle)) return false;
+        }
+        return true;
+    });
+    const remove = async (r) => {
+        await api.recordings.remove(r.id);
+        setSessions((all) => all.map((s) => (s.id === r.sessionId ? { ...s, recordings: (s.recordings || []).filter((x) => x.id !== r.id) } : s)));
+    };
+    return E("div", { style: { display: "grid", gap: 14 } },
+        E(Card, null,
+            E(Label, null, "Search recordings"),
+            E("div", { style: { display: "grid", gap: 8, gridTemplateColumns: "repeat(auto-fit, minmax(160px, 1fr))" } },
+                E(Input, { value: q, onChange: (e) => setQ(e.target.value), placeholder: "Name, topic, or custom text" }),
+                E(Input, { type: "date", value: dateFilter, onChange: (e) => setDateFilter(e.target.value) }),
+                E(Select, { value: sprintFilter, onChange: (e) => setSprintFilter(e.target.value) },
+                    E("option", { value: "all" }, "All sprints"),
+                    E("option", { value: "none" }, "No sprint"),
+                    sprints.map((sp) => E("option", { key: sp.id, value: sp.id }, `Sprint ${sp.startDate}`))),
+                (q || dateFilter || sprintFilter !== "all") && E(Btn, { variant: "ghost", onClick: () => { setQ(""); setDateFilter(""); setSprintFilter("all"); } }, "Clear filters"))),
+        E(Card, null,
+            E(Label, null, filtered.length, " recording", filtered.length === 1 ? "" : "s"),
+            filtered.length === 0 ? E(Empty, { text: "No recordings match." }) :
+                E("div", { style: { display: "grid", gap: 8, marginTop: 8 } }, filtered.map((r) => E("div", {
+                    key: r.id,
+                    style: { display: "flex", justifyContent: "space-between", alignItems: "center", gap: 10, padding: "8px 0", borderBottom: `1px solid ${C.line}` },
+                },
+                    E("div", { style: { minWidth: 0 } },
+                        E("div", { style: { fontSize: 13, fontWeight: 600, wordBreak: "break-word" } }, r.label || "(untitled)"),
+                        E("div", { style: { fontSize: 11, color: C.inkFaint, fontFamily: FONT_MONO, marginTop: 2 } },
+                            r.sessionDate, r.blockMaterial ? ` · ${r.blockMaterial}` : "", r.sprintId ? " · sprint" : "")),
+                    E(RecordingRow, { r, onDelete: () => remove(r) }))))));
 }
 /* ---------------------------------------------------------
    SPRINTS TAB
