@@ -96,7 +96,7 @@ const api = {
     create: (body) => apiCall("POST", "/topics", body),
     toggle: (id) => apiCall("PATCH", `/topics/${id}`),
     remove: (id) => apiCall("DELETE", `/topics/${id}`),
-    sendEmail: (to, topicIds) => apiCall("POST", "/topics/send-email", { to, topicIds }),
+    sendEmail: (to, topicIds, note) => apiCall("POST", "/topics/send-email", { to, topicIds, note }),
   },
   contacts: {
     list: () => apiCall("GET", "/contacts"),
@@ -2701,6 +2701,7 @@ function TopicsTab({ topics, setTopics, me }) {
     const [contacts, setContacts] = useState([]);
     const [recipient, setRecipient] = useState("self");
     const [customEmail, setCustomEmail] = useState("");
+    const [note, setNote] = useState("");
     const [sendMsg, setSendMsg] = useState(null);
     const [sending, setSending] = useState(false);
     const [showContacts, setShowContacts] = useState(false);
@@ -2724,9 +2725,10 @@ function TopicsTab({ topics, setTopics, me }) {
         setSending(true);
         setSendMsg(null);
         try {
-            const r = await api.topics.sendEmail(resolvedAddress, selectedIds);
+            const r = await api.topics.sendEmail(resolvedAddress, selectedIds, note.trim());
             setSendMsg({ type: "success", text: r.delivered ? "Sent." : "Queued \u2014 email delivery isn't fully set up yet, but this will go out once it is." });
             setSelected({});
+            setNote("");
         }
         catch (err) { setSendMsg({ type: "error", text: String(err) }); }
         setSending(false);
@@ -2787,6 +2789,7 @@ function TopicsTab({ topics, setTopics, me }) {
                     contacts.map((c) => E("option", { key: c.id, value: c.id }, `${c.label} \u2014 ${c.email}`)),
                     E("option", { value: "custom" }, "Custom address\u2026")),
                 recipient === "custom" && React.createElement(Input, { type: "email", value: customEmail, onChange: (e) => setCustomEmail(e.target.value), placeholder: "Email address" }),
+                React.createElement(TextArea, { value: note, onChange: (e) => setNote(e.target.value), placeholder: "Add a note to include with the email (optional)…", rows: 3 }),
                 sendMsg && E("div", { style: { fontSize: 12.5, color: sendMsg.type === "error" ? C.rust : C.sage } }, sendMsg.text),
                 E("div", { style: { display: "flex", gap: 8 } },
                     React.createElement(Btn, { onClick: sendSelected, disabled: sending || !resolvedAddress }, sending ? "Sending\u2026" : "Send email"),
@@ -4079,6 +4082,7 @@ function ResetPasswordForm({ token }) {
                     React.createElement(Btn, { type: "submit" }, "Update password")))))));
 }
 function AccountModal({ me, onClose, onSaved }) {
+    const [name, setName] = useState(me.name || "");
     const [prefs, setPrefs] = useState(me.notifyPrefs || { practiceReminders: true, weeklySummary: true, gearReminders: true });
     const [gearDays, setGearDays] = useState(me.gearReminderDays || 90);
     const [pw, setPw] = useState({ currentPassword: "", newPassword: "" });
@@ -4091,7 +4095,7 @@ function AccountModal({ me, onClose, onSaved }) {
             method: "PUT",
             credentials: "include",
             headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ notifyPrefs: prefs, gearReminderDays: gearDays }),
+            body: JSON.stringify({ name, notifyPrefs: prefs, gearReminderDays: gearDays }),
         });
         setMsg(res.ok ? { type: "success", text: "Saved." } : { type: "error", text: "Couldn't save." });
         if (res.ok)
@@ -4129,6 +4133,9 @@ function AccountModal({ me, onClose, onSaved }) {
                     React.createElement("div", { style: { fontFamily: FONT_DISPLAY, fontSize: 18, fontWeight: 600 } }, "Account"),
                     React.createElement("button", { onClick: onClose, style: { background: "none", border: "none", color: C.inkFaint, cursor: "pointer", fontSize: 18 } }, "\u2715")),
                 React.createElement("div", { style: { fontSize: 12.5, color: C.inkFaint, marginBottom: 14 } }, me.email),
+                React.createElement("div", { style: { marginBottom: 14 } },
+                    React.createElement(Label, null, "Your name"),
+                    React.createElement(Input, { value: name, onChange: (e) => setName(e.target.value), placeholder: "Used when emailing questions to someone else" })),
                 React.createElement(Label, null, "Email notifications"),
                 React.createElement("div", { style: { display: "grid", gap: 8, marginBottom: 10 } }, [
                     ["practiceReminders", "Practice reminders (3+ days quiet)"],

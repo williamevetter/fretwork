@@ -52,8 +52,13 @@ router.delete("/:id", (req, res) => {
 router.post("/send-email", async (req, res) => {
   const to = (req.body?.to || "").trim();
   const ids = Array.isArray(req.body?.topicIds) ? req.body.topicIds : [];
+  const note = (req.body?.note || "").trim();
   if (!isValidEmail(to)) return res.status(400).json({ error: "Enter a valid email address." });
   if (!ids.length) return res.status(400).json({ error: "Select at least one item to send." });
+
+  const sender = db.prepare("SELECT name, email FROM users WHERE id = ?").get(req.user.id);
+  const senderLabel = sender.name ? `${sender.name} (${sender.email})` : sender.email;
+  const subject = `A new Guitar Question from ${senderLabel}`;
 
   const placeholders = ids.map(() => "?").join(",");
   const rows = db.prepare(`SELECT * FROM topics WHERE user_id = ? AND id IN (${placeholders})`).all(req.user.id, ...ids);
@@ -61,10 +66,12 @@ router.post("/send-email", async (req, res) => {
   const byId = new Map(rows.map((r) => [r.id, r]));
   const ordered = ids.map((id) => byId.get(id)).filter(Boolean);
 
-  const text = "Topics & Questions from Fretwork:\n\n" + ordered.map((r) => `[${r.type.toUpperCase()}] ${r.text}`).join("\n");
+  const text = "Topics & Questions from Fretwork:\n\n" + ordered.map((r) => `[${r.type.toUpperCase()}] ${r.text}`).join("\n")
+    + (note ? `\n\nNote from ${senderLabel}:\n${note}` : "");
   const html = "<p>Topics &amp; Questions from Fretwork:</p><ul>" +
-    ordered.map((r) => `<li><strong>${escapeHtml(r.type)}</strong>: ${escapeHtml(r.text)}</li>`).join("") + "</ul>";
-  const result = await sendEmail({ to, subject: "Fretwork — Topics & Questions", text, html });
+    ordered.map((r) => `<li><strong>${escapeHtml(r.type)}</strong>: ${escapeHtml(r.text)}</li>`).join("") + "</ul>"
+    + (note ? `<p><strong>Note from ${escapeHtml(senderLabel)}:</strong><br>${escapeHtml(note).replace(/\n/g, "<br>")}</p>` : "");
+  const result = await sendEmail({ to, subject, text, html });
   res.json({ ok: true, delivered: !!result.delivered });
 });
 

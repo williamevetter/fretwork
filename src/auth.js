@@ -41,6 +41,7 @@ function rowToUser(row) {
   return {
     id: row.id,
     email: row.email,
+    name: row.name || "",
     notifyPrefs: {
       practiceReminders: !!row.notify_practice_reminders,
       weeklySummary: !!row.notify_weekly_summary,
@@ -128,9 +129,9 @@ router.post("/logout", (req, res) => {
 router.get("/me", requireAuth, (req, res) => {
   const user = db.prepare("SELECT * FROM users WHERE id = ?").get(req.user.id);
   if (!user) return res.status(401).json({ error: "Not found." });
-  const { notifyPrefs, gearReminderDays } = rowToUser(user);
+  const { notifyPrefs, gearReminderDays, name } = rowToUser(user);
   res.json({
-    email: user.email, notifyPrefs, gearReminderDays,
+    email: user.email, name, notifyPrefs, gearReminderDays,
     isAdmin: !!user.is_admin, impersonatedBy: req.user.impersonatedBy, lastLoginAt: user.last_login_at,
     mustChangePassword: !!user.must_change_password,
   });
@@ -193,10 +194,11 @@ router.put("/account/prefs", requireAuth, (req, res) => {
   const weeklySummary = prefs.weeklySummary !== undefined ? !!prefs.weeklySummary : !!user.notify_weekly_summary;
   const gearReminders = prefs.gearReminders !== undefined ? !!prefs.gearReminders : !!user.notify_gear_reminders;
   const gearReminderDays = req.body.gearReminderDays ? Number(req.body.gearReminderDays) : user.gear_reminder_days;
+  const name = req.body.name !== undefined ? String(req.body.name).trim() : user.name;
   db.prepare(`
-    UPDATE users SET notify_practice_reminders = ?, notify_weekly_summary = ?, notify_gear_reminders = ?, gear_reminder_days = ?
+    UPDATE users SET notify_practice_reminders = ?, notify_weekly_summary = ?, notify_gear_reminders = ?, gear_reminder_days = ?, name = ?
     WHERE id = ?
-  `).run(practiceReminders ? 1 : 0, weeklySummary ? 1 : 0, gearReminders ? 1 : 0, gearReminderDays, req.user.id);
+  `).run(practiceReminders ? 1 : 0, weeklySummary ? 1 : 0, gearReminders ? 1 : 0, gearReminderDays, name, req.user.id);
   res.json({ ok: true });
 });
 

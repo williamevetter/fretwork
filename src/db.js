@@ -249,6 +249,11 @@ const MIGRATIONS = [
   );
   CREATE INDEX idx_email_contacts_user ON email_contacts(user_id);
   `,
+  // Display name, surfaced in the "From" line of emailed Topics & Questions
+  // (falls back to the account email wherever it's left blank).
+  `
+  ALTER TABLE users ADD COLUMN name TEXT;
+  `,
 ];
 
 function runMigrations() {
