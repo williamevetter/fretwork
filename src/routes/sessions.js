@@ -39,6 +39,10 @@ function sessionWithBlocks(row, blockRows) {
   const recordings = db.prepare("SELECT * FROM audio_recordings WHERE session_id = ? ORDER BY created_at").all(row.id);
   return {
     id: row.id, date: row.date, sprintId: row.sprint_id, notes: row.notes || "", isAdHoc: !!row.is_ad_hoc,
+    // Session-level Planned/Actual override (Hours+Minutes in the UI) — null means
+    // "use the block-derived numbers above (duration / per-block plannedMinutes)".
+    plannedMinutes: row.planned_minutes != null ? row.planned_minutes : null,
+    actualMinutesManual: row.actual_minutes_manual != null ? row.actual_minutes_manual : null,
     duration, techniqueTimes, blocks: blockRows.map(blockRow), recordings: recordings.map(recordingRow),
   };
 }
@@ -63,10 +67,15 @@ router.post("/", (req, res) => {
   const now = nowISO();
   const row = {
     id: uid(), date, sprint_id: req.body?.sprintId || null, notes: req.body?.notes || "",
-    is_ad_hoc: req.body?.isAdHoc ? 1 : 0, created_at: now, updated_at: now,
+    is_ad_hoc: req.body?.isAdHoc ? 1 : 0,
+    planned_minutes: req.body?.plannedMinutes != null ? Number(req.body.plannedMinutes) : null,
+    actual_minutes_manual: req.body?.actualMinutesManual != null ? Number(req.body.actualMinutesManual) : null,
+    created_at: now, updated_at: now,
   };
-  db.prepare("INSERT INTO sessions (id, user_id, date, sprint_id, notes, is_ad_hoc, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)")
-    .run(row.id, req.user.id, row.date, row.sprint_id, row.notes, row.is_ad_hoc, row.created_at, row.updated_at);
+  db.prepare(`
+    INSERT INTO sessions (id, user_id, date, sprint_id, notes, is_ad_hoc, planned_minutes, actual_minutes_manual, created_at, updated_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+  `).run(row.id, req.user.id, row.date, row.sprint_id, row.notes, row.is_ad_hoc, row.planned_minutes, row.actual_minutes_manual, row.created_at, row.updated_at);
   res.json(sessionWithBlocks(row, []));
 });
 
@@ -81,9 +90,14 @@ router.patch("/:id", (req, res) => {
   const date = req.body?.date !== undefined ? req.body.date : row.date;
   const sprint_id = req.body?.sprintId !== undefined ? req.body.sprintId : row.sprint_id;
   const is_ad_hoc = req.body?.isAdHoc !== undefined ? (req.body.isAdHoc ? 1 : 0) : row.is_ad_hoc;
+  const planned_minutes = req.body?.plannedMinutes !== undefined ? (req.body.plannedMinutes != null ? Number(req.body.plannedMinutes) : null) : row.planned_minutes;
+  const actual_minutes_manual = req.body?.actualMinutesManual !== undefined ? (req.body.actualMinutesManual != null ? Number(req.body.actualMinutesManual) : null) : row.actual_minutes_manual;
   const updated_at = nowISO();
-  db.prepare("UPDATE sessions SET notes = ?, date = ?, sprint_id = ?, is_ad_hoc = ?, updated_at = ? WHERE id = ?").run(notes, date, sprint_id, is_ad_hoc, updated_at, row.id);
-  res.json(sessionWithBlocks({ ...row, notes, date, sprint_id, is_ad_hoc, updated_at }, blocksStmt.all(row.id)));
+  db.prepare(`
+    UPDATE sessions SET notes = ?, date = ?, sprint_id = ?, is_ad_hoc = ?, planned_minutes = ?, actual_minutes_manual = ?, updated_at = ?
+    WHERE id = ?
+  `).run(notes, date, sprint_id, is_ad_hoc, planned_minutes, actual_minutes_manual, updated_at, row.id);
+  res.json(sessionWithBlocks({ ...row, notes, date, sprint_id, is_ad_hoc, planned_minutes, actual_minutes_manual, updated_at }, blocksStmt.all(row.id)));
 });
 
 router.delete("/:id", (req, res) => {

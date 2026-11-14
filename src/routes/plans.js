@@ -12,6 +12,7 @@ function rowToPlan(row) {
     date: row.date,
     content: row.content || "",
     goals: row.goals || "",
+    plannedMinutes: row.planned_minutes != null ? row.planned_minutes : null,
     techniques: JSON.parse(row.techniques_json || "[]"),
     lessonRefs: JSON.parse(row.lesson_refs_json || "[]"),
   };
@@ -23,17 +24,18 @@ router.get("/", (req, res) => {
 });
 
 router.post("/", (req, res) => {
-  const { date, content, goals, techniques, lessonRefs } = req.body || {};
+  const { date, content, goals, techniques, lessonRefs, plannedMinutes } = req.body || {};
   if (!date || !goals) return res.status(400).json({ error: "date and goals are required." });
   const row = {
     id: uid(), date, content: content || "", goals,
+    planned_minutes: plannedMinutes != null ? Number(plannedMinutes) : null,
     techniques_json: JSON.stringify(techniques || []),
     lesson_refs_json: JSON.stringify(lessonRefs || []),
   };
   db.prepare(`
-    INSERT INTO plans (id, user_id, date, content, goals, techniques_json, lesson_refs_json)
-    VALUES (?, ?, ?, ?, ?, ?, ?)
-  `).run(row.id, req.user.id, row.date, row.content, row.goals, row.techniques_json, row.lesson_refs_json);
+    INSERT INTO plans (id, user_id, date, content, goals, planned_minutes, techniques_json, lesson_refs_json)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+  `).run(row.id, req.user.id, row.date, row.content, row.goals, row.planned_minutes, row.techniques_json, row.lesson_refs_json);
   res.json(rowToPlan(row));
 });
 

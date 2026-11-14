@@ -624,6 +624,29 @@ function Select(props) {
 function Empty({ text }) {
     return (React.createElement("div", { style: { padding: "28px 12px", textAlign: "center", color: C.inkFaint, fontSize: 13.5 } }, text));
 }
+// Hours+Minutes entry for the Planned/Actual time fields. `value` is total minutes
+// (number) or null/"" for "unset" — typing anything, even 0, counts as a real value
+// (there's no separate "clear" control; set both boxes back to blank to unset).
+function HoursMinutesInput({ value, onChange, disabled }) {
+    const totalMin = value == null || value === "" ? null : Number(value);
+    const h = totalMin == null ? "" : Math.floor(totalMin / 60);
+    const m = totalMin == null ? "" : totalMin % 60;
+    const commit = (hVal, mVal) => {
+        if (hVal === "" && mVal === "") { onChange(null); return; }
+        onChange((Number(hVal) || 0) * 60 + (Number(mVal) || 0));
+    };
+    return E("div", { style: { display: "flex", gap: 6, alignItems: "center" } },
+        E(Input, {
+            type: "number", min: "0", disabled, value: h, placeholder: "0",
+            onChange: (e) => commit(e.target.value, m === "" ? "0" : m), style: { width: 64 },
+        }),
+        E("span", { style: { fontSize: 12, color: C.inkFaint } }, "h"),
+        E(Input, {
+            type: "number", min: "0", max: "59", disabled, value: m, placeholder: "0",
+            onChange: (e) => commit(h === "" ? "0" : h, e.target.value), style: { width: 64 },
+        }),
+        E("span", { style: { fontSize: 12, color: C.inkFaint } }, "m"));
+}
 function fmtMin(min) {
     const whole = Math.round(Number(min) || 0);
     if (whole < 60)
@@ -1898,16 +1921,18 @@ function RecordingRow({ r, onDelete }) {
         onDelete && E(Btn, { variant: "danger", style: { fontSize: 11, padding: "4px 7px" }, onClick: () => onDelete(r) }, "✕"));
 }
 function SessionSummaryRow({ s, techniques, onEdit, onDelete }) {
-    const plannedTotal = (s.blocks || []).reduce((sum, b) => sum + (b.plannedMinutes != null ? Number(b.plannedMinutes) : 0), 0);
+    const plannedTotal = s.plannedMinutes != null ? s.plannedMinutes
+        : (s.blocks || []).reduce((sum, b) => sum + (b.plannedMinutes != null ? Number(b.plannedMinutes) : 0), 0);
+    const actualTotal = s.actualMinutesManual != null ? s.actualMinutesManual : s.duration;
     return E("div", { key: s.id, style: { padding: "10px 0", borderBottom: `1px solid ${C.line}` } },
         E("div", { style: { display: "flex", justifyContent: "space-between", alignItems: "start" } },
             E("div", null,
                 E("div", { style: { display: "flex", gap: 8, alignItems: "baseline" } },
                     E("span", { style: { fontFamily: FONT_MONO, fontSize: 11, color: C.brass } }, s.date),
-                    E("span", { style: { fontFamily: FONT_MONO, fontSize: 11, color: C.inkFaint } }, fmtMin(s.duration)),
+                    E("span", { style: { fontFamily: FONT_MONO, fontSize: 11, color: C.inkFaint } }, fmtMin(actualTotal)),
                     s.isAdHoc && E("span", { style: { fontSize: 10, fontFamily: FONT_MONO, color: C.inkFaint, border: `1px solid ${C.line}`, borderRadius: 4, padding: "0 5px" } }, "AD-HOC")),
                 !s.isAdHoc && E("div", { style: { fontSize: 11.5, color: C.inkFaint, marginTop: 2 } },
-                    "Planned ", fmtMin(plannedTotal), " · Actual ", fmtMin(s.duration)),
+                    "Planned ", fmtMin(plannedTotal), " · Actual ", fmtMin(actualTotal)),
                 Object.keys(s.techniqueTimes || {}).length > 0 && E("div", { style: { fontSize: 11.5, color: C.inkFaint, marginTop: 4 } },
                     Object.entries(s.techniqueTimes).map(([id, min]) => {
                         const t = techniques.find((x) => x.id === id);
@@ -1926,7 +1951,7 @@ function SessionSummaryRow({ s, techniques, onEdit, onDelete }) {
 }
 function SessionsTab({ data, sessions, setSessions, plans, setPlans, coursesIndex, sprints, editSessionId, setEditSessionId }) {
     const [mode, setMode] = useState("log");
-    const [planForm, setPlanForm] = useState({ date: todayISO(), content: "", goals: "", techniques: [], lessonRefs: [] });
+    const [planForm, setPlanForm] = useState({ date: todayISO(), content: "", goals: "", plannedMinutes: null, techniques: [], lessonRefs: [] });
     const allLessons = useMemo(() => flattenLessons(coursesIndex), [coursesIndex]);
     const sprint = activeSprint(sprints);
 
@@ -1967,6 +1992,15 @@ function SessionsTab({ data, sessions, setSessions, plans, setPlans, coursesInde
         if (!draft) { setAdHocChecked(checked); return; }
         mergeSession(await api.sessions.patch(draft.id, { isAdHoc: checked }));
     };
+    const toggleIncludeInSprint = async (checked) => {
+        mergeSession(await api.sessions.patch(draft.id, { sprintId: checked && sprint ? sprint.id : null }));
+    };
+    const setDraftDate = async (newDate) => {
+        if (!newDate) return;
+        mergeSession(await api.sessions.patch(draft.id, { date: newDate }));
+    };
+    const setDraftPlannedMinutes = async (min) => mergeSession(await api.sessions.patch(draft.id, { plannedMinutes: min }));
+    const setDraftActualMinutes = async (min) => mergeSession(await api.sessions.patch(draft.id, { actualMinutesManual: min }));
 
     // Resume a timer left running across a reload/crash — only takes over when nothing
     // is already open, so it never fights a user who's deliberately looking at something else.
@@ -2182,7 +2216,7 @@ function SessionsTab({ data, sessions, setSessions, plans, setPlans, coursesInde
         e.preventDefault();
         const created = await api.plans.create(planForm);
         setPlans((p) => [created, ...p]);
-        setPlanForm({ date: todayISO(), content: "", goals: "", techniques: [], lessonRefs: [] });
+        setPlanForm({ date: todayISO(), content: "", goals: "", plannedMinutes: null, techniques: [], lessonRefs: [] });
     };
     const deleteSession = async (id) => { await api.sessions.remove(id); setSessions((s) => s.filter((x) => x.id !== id)); };
     const deletePlan = async (id) => { await api.plans.remove(id); setPlans((p) => p.filter((x) => x.id !== id)); };
@@ -2193,6 +2227,7 @@ function SessionsTab({ data, sessions, setSessions, plans, setPlans, coursesInde
             date: todayISO(),
             sprintId: sprint ? sprint.id : null,
             notes: `Plan: ${p.goals}${p.content ? " — " + p.content : ""}`,
+            plannedMinutes: p.plannedMinutes,
         });
         setSessions((all) => [created, ...all]);
         setMode("log");
@@ -2236,13 +2271,24 @@ function SessionsTab({ data, sessions, setSessions, plans, setPlans, coursesInde
 
             draft && E(Card, null,
                 E("div", { style: { display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: 8 } },
-                    E("div", { style: { display: "flex", gap: 10, alignItems: "center" } },
-                        E("span", { style: { fontFamily: FONT_MONO, fontSize: 12, color: C.brass } }, fmtDate(draft.date)),
-                        draft.sprintId && E("span", { style: { fontFamily: FONT_MONO, fontSize: 11, color: C.brass } }, "sprint session")),
-                    E("span", { style: { fontFamily: FONT_MONO, fontSize: 13, color: C.inkDim } }, fmtMin(draft.duration), " logged so far")),
+                    E(Input, {
+                        type: "date", value: draft.date, onChange: (e) => setDraftDate(e.target.value),
+                        style: { fontFamily: FONT_MONO, fontSize: 12, color: C.brass, width: 150, padding: "4px 6px" },
+                    }),
+                    E("span", { style: { fontFamily: FONT_MONO, fontSize: 13, color: C.inkDim } }, fmtMin(draft.actualMinutesManual != null ? draft.actualMinutesManual : draft.duration), " logged so far")),
                 E("label", { style: { display: "flex", alignItems: "center", gap: 8, fontSize: 12.5, color: C.inkFaint, marginTop: 8 } },
                     E("input", { type: "checkbox", checked: !!draft.isAdHoc, onChange: (e) => toggleAdHoc(e.target.checked) }),
-                    "Ad-hoc session (hide Planned vs Actual for this one)")),
+                    "Ad-hoc session (hide Planned vs Actual for this one)"),
+                sprint && E("label", { style: { display: "flex", alignItems: "center", gap: 8, fontSize: 12.5, color: C.inkFaint, marginTop: 6 } },
+                    E("input", { type: "checkbox", checked: draft.sprintId === sprint.id, onChange: (e) => toggleIncludeInSprint(e.target.checked) }),
+                    "Include this session in the current sprint"),
+                E("div", { style: { display: "flex", gap: 20, flexWrap: "wrap", marginTop: 10, paddingTop: 10, borderTop: `1px solid ${C.line}` } },
+                    E("div", null,
+                        E(Label, null, "Planned time"),
+                        E(HoursMinutesInput, { value: draft.plannedMinutes, onChange: setDraftPlannedMinutes })),
+                    E("div", null,
+                        E(Label, null, "Actual time"),
+                        E(HoursMinutesInput, { value: draft.actualMinutesManual, onChange: setDraftActualMinutes })))),
 
             draft && E(Card, null,
                 E(Label, null, "Notes"),
@@ -2373,6 +2419,9 @@ function SessionsTab({ data, sessions, setSessions, plans, setPlans, coursesInde
                     React.createElement(Label, null, "Content to cover"),
                     React.createElement(TextArea, { rows: 2, value: planForm.content, onChange: (e) => setPlanForm({ ...planForm, content: e.target.value }), placeholder: "Warm-up scales, specific piece, technique drills\u2026" })),
                 React.createElement("div", null,
+                    React.createElement(Label, null, "Planned time"),
+                    E(HoursMinutesInput, { value: planForm.plannedMinutes, onChange: (min) => setPlanForm({ ...planForm, plannedMinutes: min }) })),
+                React.createElement("div", null,
                     React.createElement(Label, null, "Techniques planned"),
                     React.createElement("div", { style: { display: "flex", flexWrap: "wrap", gap: 6 } }, data.techniques.map((t) => {
                         const on = planForm.techniques.includes(t.id);
@@ -2414,7 +2463,8 @@ function SessionsTab({ data, sessions, setSessions, plans, setPlans, coursesInde
             upcomingPlans.length === 0 ? (React.createElement(Empty, { text: "Nothing planned yet." })) : (upcomingPlans.map((p) => (React.createElement("div", { key: p.id, style: { padding: "10px 0", borderBottom: `1px solid ${C.line}` } },
                 React.createElement("div", { style: { display: "flex", justifyContent: "space-between", alignItems: "start" } },
                     React.createElement("div", null,
-                        React.createElement("div", { style: { fontFamily: FONT_MONO, fontSize: 11, color: C.brass } }, p.date),
+                        React.createElement("div", { style: { fontFamily: FONT_MONO, fontSize: 11, color: C.brass } },
+                            p.date, p.plannedMinutes != null && E("span", { style: { color: C.inkFaint, marginLeft: 8 } }, "Planned ", fmtMin(p.plannedMinutes))),
                         React.createElement("div", { style: { fontWeight: 600, fontSize: 14 } }, p.goals),
                         p.content && React.createElement("div", { style: { fontSize: 13, color: C.inkDim, marginTop: 2 } }, renderTableFriendlyText(p.content)),
                         p.techniques.length > 0 && (React.createElement("div", { style: { fontSize: 11.5, color: C.inkFaint, marginTop: 4 } }, p.techniques.map((id) => { var _a; return (_a = data.techniques.find((t) => t.id === id)) === null || _a === void 0 ? void 0 : _a.name; }).filter(Boolean).join(" · "))),

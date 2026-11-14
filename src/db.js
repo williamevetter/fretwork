@@ -263,6 +263,16 @@ const MIGRATIONS = [
   ALTER TABLE audio_recordings ADD COLUMN block_id TEXT REFERENCES session_blocks(id);
   ALTER TABLE audio_recordings ADD COLUMN label TEXT;
   `,
+  // Session-level Planned/Actual time (Hours+Minutes in the UI), independent of the
+  // per-block planned/actual tracking — mainly for ad-hoc sessions with no blocks to
+  // sum, or anyone who'd rather log one whole-session total. Null means "use the
+  // block-derived sum instead" (existing behavior), so this is purely additive.
+  // Plans get the same Planned Time field — there's no "actual" on a plan yet.
+  `
+  ALTER TABLE sessions ADD COLUMN planned_minutes REAL;
+  ALTER TABLE sessions ADD COLUMN actual_minutes_manual REAL;
+  ALTER TABLE plans ADD COLUMN planned_minutes REAL;
+  `,
 ];
 
 function runMigrations() {
