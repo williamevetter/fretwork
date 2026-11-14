@@ -984,12 +984,14 @@ function ToolsPanel() {
     const tunerBufRef = useRef(null);
     const tunerRafRef = useRef(null);
     const tunerLastDetectRef = useRef(0);
+    const tunerFreqHistoryRef = useRef([]);
     const stopTuner = useCallback(() => {
         if (tunerRafRef.current) cancelAnimationFrame(tunerRafRef.current);
         tunerRafRef.current = null;
         if (tunerStreamRef.current) { tunerStreamRef.current.getTracks().forEach((t) => t.stop()); tunerStreamRef.current = null; }
         if (tunerCtxRef.current) { tunerCtxRef.current.close().catch(() => {}); tunerCtxRef.current = null; }
         tunerAnalyserRef.current = null;
+        tunerFreqHistoryRef.current = [];
         setLive(null);
         setTunerOn(false);
     }, []);
@@ -999,11 +1001,15 @@ function ToolsPanel() {
         const buf = tunerBufRef.current;
         if (!analyser || !buf) return;
         const now = performance.now();
-        if (now - tunerLastDetectRef.current < 60) return;
+        if (now - tunerLastDetectRef.current < TUNER_DETECT_INTERVAL_MS) return;
         tunerLastDetectRef.current = now;
         analyser.getFloatTimeDomainData(buf);
-        const freq = autoCorrelate(buf, tunerCtxRef.current.sampleRate);
-        if (freq === -1) { setLive(null); return; }
+        const raw = autoCorrelate(buf, tunerCtxRef.current.sampleRate);
+        if (raw === -1) { tunerFreqHistoryRef.current = []; setLive(null); return; }
+        const hist = tunerFreqHistoryRef.current;
+        hist.push(raw);
+        if (hist.length > TUNER_SMOOTHING_WINDOW) hist.shift();
+        const freq = medianOf(hist);
         const midi = 69 + 12 * Math.log2(freq / 440);
         const rounded = Math.round(midi);
         const cents = Math.round((midi - rounded) * 100);
@@ -3579,6 +3585,16 @@ function LessonReader({ course, lessonMeta, lessonContent, notes, setNotes, onBa
 /* ---------------------------------------------------------
    PITCH DETECTION (autocorrelation) + HIT THE NOTE TRAINER
 --------------------------------------------------------- */
+// How often the tuners actually re-detect pitch — was 60ms (~16/sec), which let a
+// single noisy/octave-error reading from autoCorrelate jump the display immediately.
+// Slower polling plus the median-of-3 filter below (see TUNER_SMOOTHING_WINDOW) is
+// what actually fixes the twitchiness: one bad frame no longer reaches the display.
+const TUNER_DETECT_INTERVAL_MS = 120;
+const TUNER_SMOOTHING_WINDOW = 3;
+function medianOf(arr) {
+    const sorted = [...arr].sort((a, b) => a - b);
+    return sorted[Math.floor(sorted.length / 2)];
+}
 function autoCorrelate(buf, sampleRate) {
     const SIZE = buf.length;
     let rms = 0;
@@ -4436,6 +4452,7 @@ function GuitarTunerTab() {
     const bufRef = useRef(null);
     const rafRef = useRef(null);
     const lastDetectAtRef = useRef(0);
+    const freqHistoryRef = useRef([]);
     const activeTuningRef = useRef(activeTuning);
     useEffect(() => { activeTuningRef.current = activeTuning; }, [activeTuning]);
     const cleanupMic = useCallback(() => {
@@ -4444,6 +4461,7 @@ function GuitarTunerTab() {
         if (streamRef.current) { streamRef.current.getTracks().forEach((t) => t.stop()); streamRef.current = null; }
         if (audioCtxRef.current) { audioCtxRef.current.close().catch(() => { }); audioCtxRef.current = null; }
         analyserRef.current = null;
+        freqHistoryRef.current = [];
     }, []);
     useEffect(() => () => cleanupMic(), [cleanupMic]);
     const loop = useCallback(() => {
@@ -4452,11 +4470,15 @@ function GuitarTunerTab() {
         const buf = bufRef.current;
         if (!analyser || !buf) return;
         const now = performance.now();
-        if (now - lastDetectAtRef.current < 60) return;
+        if (now - lastDetectAtRef.current < TUNER_DETECT_INTERVAL_MS) return;
         lastDetectAtRef.current = now;
         analyser.getFloatTimeDomainData(buf);
-        const freq = autoCorrelate(buf, audioCtxRef.current.sampleRate);
-        if (freq === -1) { setLive(null); return; }
+        const raw = autoCorrelate(buf, audioCtxRef.current.sampleRate);
+        if (raw === -1) { freqHistoryRef.current = []; setLive(null); return; }
+        const hist = freqHistoryRef.current;
+        hist.push(raw);
+        if (hist.length > TUNER_SMOOTHING_WINDOW) hist.shift();
+        const freq = medianOf(hist);
         const strings = activeTuningRef.current.strings;
         let bestI = 0, bestAbs = Infinity, bestCents = 0;
         strings.forEach((s, i) => {
