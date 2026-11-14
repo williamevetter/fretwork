@@ -897,17 +897,33 @@ function UtilitiesNavItem({ tab, setTab }) {
     const [open, setOpen] = useState(false);
     const [coords, setCoords] = useState({ top: 0, left: 0 });
     const btnRef = useRef(null);
+    // The dropdown is position:fixed, so it sits outside this div's own layout box —
+    // the mouse crosses "empty" space between the button and the menu on its way down,
+    // which used to fire onMouseLeave on the wrapper before the cursor ever reached the
+    // menu (closing it instantly). A short cancelable delay bridges that gap.
+    const closeTimerRef = useRef(null);
     const active = UTILITY_TABS.some((u) => u.id === tab);
+    const cancelClose = () => {
+        if (closeTimerRef.current) { clearTimeout(closeTimerRef.current); closeTimerRef.current = null; }
+    };
     const openMenu = () => {
+        cancelClose();
         if (btnRef.current) {
             const r = btnRef.current.getBoundingClientRect();
             setCoords({ top: r.bottom + 4, left: r.left });
         }
         setOpen(true);
     };
-    return E("div", { style: { position: "relative", flexShrink: 0 }, onMouseEnter: openMenu, onMouseLeave: () => setOpen(false) },
+    const scheduleClose = () => {
+        cancelClose();
+        closeTimerRef.current = setTimeout(() => setOpen(false), 250);
+    };
+    useEffect(() => () => cancelClose(), []);
+    return E("div", { style: { position: "relative", flexShrink: 0 } },
         E("button", {
             ref: btnRef,
+            onMouseEnter: openMenu,
+            onMouseLeave: scheduleClose,
             onClick: () => (open ? setOpen(false) : openMenu()),
             style: {
                 flexShrink: 0, fontFamily: FONT_BODY, fontSize: 13, fontWeight: 600, padding: "8px 13px",
@@ -916,6 +932,8 @@ function UtilitiesNavItem({ tab, setTab }) {
             },
         }, "Utilities ▾"),
         open && E("div", {
+            onMouseEnter: cancelClose,
+            onMouseLeave: scheduleClose,
             style: {
                 position: "fixed", top: coords.top, left: coords.left, background: C.surfaceRaised,
                 border: `1px solid ${C.line}`, borderRadius: 8, minWidth: 190, zIndex: 1000, overflow: "hidden",
