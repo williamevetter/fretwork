@@ -48,7 +48,7 @@ const api = {
   },
   sprints: {
     list: () => apiCall("GET", "/sprints"),
-    create: (startDate) => apiCall("POST", "/sprints", { startDate }),
+    create: (startDate, courseId) => apiCall("POST", "/sprints", { startDate, courseId }),
     patch: (id, body) => apiCall("PATCH", `/sprints/${id}`, body),
     end: (id, body) => apiCall("POST", `/sprints/${id}/end`, body),
     addQueueItem: (sprintId, body) => apiCall("POST", `/sprints/${sprintId}/queue-items`, body),
@@ -120,6 +120,7 @@ const api = {
     list: () => apiCall("GET", "/courses"),
     content: (id) => apiCall("GET", `/courses/${id}/content`),
     create: (body) => apiCall("POST", "/courses", body),
+    patch: (id, body) => apiCall("PATCH", `/courses/${id}`, body),
     remove: (id) => apiCall("DELETE", `/courses/${id}`),
     addLesson: (courseId, body) => apiCall("POST", `/courses/${courseId}/lessons`, body),
     removeLesson: (courseId, lessonId) => apiCall("DELETE", `/courses/${courseId}/lessons/${lessonId}`),
@@ -1439,7 +1440,7 @@ function App({ me }) {
                 },
             }, "Admin")),
         React.createElement("main", { style: { padding: 16, maxWidth: 900, margin: "0 auto" } },
-            tab === "dashboard" && React.createElement(Dashboard, { data: data, setTab: setTab, sprints: sprints }),
+            tab === "dashboard" && React.createElement(Dashboard, { data: data, setTab: setTab, sprints: sprints, coursesIndex: coursesIndex }),
             tab === "sessions" && (React.createElement(SessionsTab, { data: data, sessions: sessions, setSessions: setSessions, plans: plans, setPlans: setPlans, coursesIndex: coursesIndex, sprints: sprints, editSessionId: editSessionId, setEditSessionId: setEditSessionId })),
             tab === "search" && E(SessionsSearchTab, { sessions: sessions, techniques: techniques, sprints: sprints, onEditSession: (id) => { setEditSessionId(id); setTab("sessions"); } }),
             tab === "recordings" && E(RecordingsTab, { sessions: sessions, setSessions: setSessions, sprints: sprints }),
@@ -1599,7 +1600,9 @@ function daysAgoISO(n) {
 }
 function resolveDateRange(preset, { sprints, customFrom, customTo }) {
     if (preset === "thisSprint") {
-        const s = activeSprint(sprints);
+        // "This Sprint" means the general (no-course) active sprint — course-scoped
+        // date ranges aren't part of this picker yet, now that sprints are per-course.
+        const s = activeSprintForCourse(sprints, null);
         return s ? { from: s.startDate, to: s.endDate, empty: false } : { from: null, to: null, empty: true };
     }
     if (preset === "previousSprint") {
@@ -1631,9 +1634,9 @@ function RangePicker({ presets, preset, setPreset, customFrom, setCustomFrom, cu
 /* ---------------------------------------------------------
    DASHBOARD
 --------------------------------------------------------- */
-function Dashboard({ data, setTab, sprints }) {
-    const sprint = activeSprint(sprints);
-    const [rangePreset, setRangePreset] = useState(() => (activeSprint(sprints) ? "thisSprint" : "allTime"));
+function Dashboard({ data, setTab, sprints, coursesIndex }) {
+    const activeSprints = activeSprintsByCourse(sprints);
+    const [rangePreset, setRangePreset] = useState(() => (activeSprintForCourse(sprints, null) ? "thisSprint" : "allTime"));
     const [customFrom, setCustomFrom] = useState(todayISO());
     const [customTo, setCustomTo] = useState(todayISO());
     const range = resolveDateRange(rangePreset, { sprints, customFrom, customTo });
@@ -1681,20 +1684,21 @@ function Dashboard({ data, setTab, sprints }) {
                     E("div", { style: { display: "flex", justifyContent: "space-between", fontSize: 12.5 } },
                         E("span", { style: { color: C.brass } }, "Sprint ", sprintPct, "% · ", fmtMin(sprintMin)),
                         E("span", { style: { color: C.string } }, "Session ", sessionPct, "% · ", fmtMin(sessionMin)))))),
-        sprint && E(Card, null,
-            E("div", { style: { display: "flex", justifyContent: "space-between", alignItems: "baseline" } },
-                E(Label, null, "Active sprint"),
-                E("span", { style: { fontFamily: FONT_MONO, fontSize: 11, color: C.inkFaint } },
-                    fmtDate(sprint.startDate), " → ", fmtDate(sprint.endDate))),
-            (() => {
-                const done = sprint.queue.filter((q) => q.completed).length;
-                const total = sprint.queue.length;
-                const daysLeft = Math.max(0, Math.ceil((new Date(sprint.endDate) - new Date(todayISO())) / 86400000));
-                return E("div", { style: { display: "flex", justifyContent: "space-between", alignItems: "center", marginTop: 6 } },
+        [...activeSprints.values()].map((sp) => {
+            const course = sp.courseId ? (coursesIndex || []).find((c) => c.id === sp.courseId) : null;
+            const done = sp.queue.filter((q) => q.completed).length;
+            const total = sp.queue.length;
+            const daysLeft = Math.max(0, Math.ceil((new Date(sp.endDate) - new Date(todayISO())) / 86400000));
+            return E(Card, { key: sp.id },
+                E("div", { style: { display: "flex", justifyContent: "space-between", alignItems: "baseline" } },
+                    E(Label, null, "Active sprint — ", course ? course.name : "General"),
+                    E("span", { style: { fontFamily: FONT_MONO, fontSize: 11, color: C.inkFaint } },
+                        fmtDate(sp.startDate), " → ", fmtDate(sp.endDate))),
+                E("div", { style: { display: "flex", justifyContent: "space-between", alignItems: "center", marginTop: 6 } },
                     E("span", { style: { fontSize: 13.5 } }, total === 0 ? "Queue is empty." : `${done} / ${total} queue items complete`),
-                    E("span", { style: { fontFamily: FONT_MONO, fontSize: 12, color: C.brass } }, daysLeft, " day", daysLeft === 1 ? "" : "s", " left"));
-            })(),
-            E("div", { style: { marginTop: 10 } }, E(Btn, { variant: "ghost", onClick: () => setTab("sprints") }, "Open Sprints →"))),
+                    E("span", { style: { fontFamily: FONT_MONO, fontSize: 12, color: C.brass } }, daysLeft, " day", daysLeft === 1 ? "" : "s", " left")),
+                E("div", { style: { marginTop: 10 } }, E(Btn, { variant: "ghost", onClick: () => setTab("sprints") }, "Open Sprints →")));
+        }),
         React.createElement(Card, null,
             React.createElement(Label, null, "Technique time"),
             techRows.length === 0 ? (React.createElement(Empty, { text: "Log a session with technique time to see totals here." })) : (React.createElement("div", { style: { display: "grid", gap: 8, marginTop: 4 } }, techRows.map((t) => (React.createElement("div", { key: t.id },
@@ -1784,8 +1788,16 @@ function generatePlan(data, coursesIndex) {
 // server-side (see src/routes/sprints.js) — the API always returns a sprint's
 // queue already sorted by category rank then manual order, so there's nothing
 // left to rank client-side.
-function activeSprint(sprints) {
-    return (sprints || []).find((s) => s.status === "active") || null;
+// courseId=null is the "general" (no-course) bucket — there can be one active sprint
+// per course plus one general one, all concurrently, since each course now runs its
+// own sprint cadence.
+function activeSprintForCourse(sprints, courseId) {
+    return (sprints || []).find((s) => s.status === "active" && (s.courseId || null) === (courseId || null)) || null;
+}
+function activeSprintsByCourse(sprints) {
+    const map = new Map();
+    (sprints || []).filter((s) => s.status === "active").forEach((s) => map.set(s.courseId || null, s));
+    return map;
 }
 // Two anchors given: 15min day -> 5/8/2; "full" session -> 5-15 warmup / >=15 content / 15-30 cooldown.
 // Interpolated continuously across the boundary — see plan doc for verification numbers.
@@ -1953,7 +1965,12 @@ function SessionsTab({ data, sessions, setSessions, plans, setPlans, coursesInde
     const [mode, setMode] = useState("log");
     const [planForm, setPlanForm] = useState({ date: todayISO(), content: "", goals: "", plannedMinutes: null, techniques: [], lessonRefs: [] });
     const allLessons = useMemo(() => flattenLessons(coursesIndex), [coursesIndex]);
-    const sprint = activeSprint(sprints);
+    // Which course's sprint a new session should pull its queue/budget from — each
+    // course now runs its own concurrent sprint, so this has to be chosen explicitly
+    // rather than assumed from a single global "the active sprint."
+    const [selectedCourseId, setSelectedCourseId] = useState(null);
+    const sprint = activeSprintForCourse(sprints, selectedCourseId);
+    const activeSprintsMap = activeSprintsByCourse(sprints);
 
     // --- Block-based session logging ---
     // The session being built is just "whichever id is in draftSessionId" — every block
@@ -1992,8 +2009,8 @@ function SessionsTab({ data, sessions, setSessions, plans, setPlans, coursesInde
         if (!draft) { setAdHocChecked(checked); return; }
         mergeSession(await api.sessions.patch(draft.id, { isAdHoc: checked }));
     };
-    const toggleIncludeInSprint = async (checked) => {
-        mergeSession(await api.sessions.patch(draft.id, { sprintId: checked && sprint ? sprint.id : null }));
+    const linkDraftToSprint = async (sprintId) => {
+        mergeSession(await api.sessions.patch(draft.id, { sprintId }));
     };
     const setDraftDate = async (newDate) => {
         if (!newDate) return;
@@ -2248,6 +2265,11 @@ function SessionsTab({ data, sessions, setSessions, plans, setPlans, coursesInde
         mode === "log" && E("div", { style: { display: "grid", gap: 12 } },
             !draft && E(Card, null,
                 E(Label, null, "Start Session"),
+                (coursesIndex || []).length > 0 && E("div", { style: { marginBottom: 10 } },
+                    E(Label, null, "Course"),
+                    E(Select, { value: selectedCourseId || "", onChange: (e) => setSelectedCourseId(e.target.value || null) },
+                        E("option", { value: "" }, "General"),
+                        coursesIndex.map((c) => E("option", { key: c.id, value: c.id }, c.name)))),
                 sprint ? E("div", { style: { display: "grid", gap: 10 } },
                     E("div", null,
                         E(Label, null, "Time available today (min)"),
@@ -2279,9 +2301,17 @@ function SessionsTab({ data, sessions, setSessions, plans, setPlans, coursesInde
                 E("label", { style: { display: "flex", alignItems: "center", gap: 8, fontSize: 12.5, color: C.inkFaint, marginTop: 8 } },
                     E("input", { type: "checkbox", checked: !!draft.isAdHoc, onChange: (e) => toggleAdHoc(e.target.checked) }),
                     "Ad-hoc session (hide Planned vs Actual for this one)"),
-                sprint && E("label", { style: { display: "flex", alignItems: "center", gap: 8, fontSize: 12.5, color: C.inkFaint, marginTop: 6 } },
-                    E("input", { type: "checkbox", checked: draft.sprintId === sprint.id, onChange: (e) => toggleIncludeInSprint(e.target.checked) }),
-                    "Include this session in the current sprint"),
+                activeSprintsMap.size > 0 && E("div", { style: { marginTop: 8, display: "flex", alignItems: "center", gap: 8 } },
+                    E("span", { style: { fontSize: 12.5, color: C.inkFaint } }, "Link to sprint:"),
+                    E(Select, {
+                        value: draft.sprintId || "", onChange: (e) => linkDraftToSprint(e.target.value || null),
+                        style: { fontSize: 12.5, padding: "4px 6px" },
+                    },
+                        E("option", { value: "" }, "Not linked to any sprint"),
+                        [...activeSprintsMap.entries()].map(([courseId, sp]) => {
+                            const course = courseId ? (coursesIndex || []).find((c) => c.id === courseId) : null;
+                            return E("option", { key: sp.id, value: sp.id }, course ? course.name : "General");
+                        }))),
                 E("div", { style: { display: "flex", gap: 20, flexWrap: "wrap", marginTop: 10, paddingTop: 10, borderTop: `1px solid ${C.line}` } },
                     E("div", null,
                         E(Label, null, "Planned time"),
@@ -2578,8 +2608,31 @@ function RecordingsTab({ sessions, setSessions, sprints }) {
    SPRINTS TAB
 --------------------------------------------------------- */
 function SprintsTab({ sessions, setSessions, sprints, setSprints, coursesIndex, setTab }) {
-    const sprint = activeSprint(sprints);
-    const pastSprints = [...sprints].filter((s) => s.status !== "active").sort((a, b) => (a.startDate < b.startDate ? 1 : -1));
+    // Each course runs its own concurrent sprint now — this tab is scoped to whichever
+    // one is selected, "General" (no course) being the pre-existing single-sprint behavior.
+    const [selectedCourseId, setSelectedCourseId] = useState(null);
+    const sprint = activeSprintForCourse(sprints, selectedCourseId);
+    const selectedCourse = selectedCourseId ? (coursesIndex || []).find((c) => c.id === selectedCourseId) : null;
+    const sprintLengthLabel = selectedCourse
+        ? `${selectedCourse.sprintLengthValue} ${selectedCourse.sprintLengthUnit}${selectedCourse.sprintLengthValue === 1 ? "" : "s"}`
+        : "14 days";
+    const pastSprints = [...sprints]
+        .filter((s) => s.status !== "active" && (s.courseId || null) === (selectedCourseId || null))
+        .sort((a, b) => (a.startDate < b.startDate ? 1 : -1));
+    const CourseSelector = () => E(Card, null,
+        E(Label, null, "Course"),
+        E("div", { style: { display: "flex", flexWrap: "wrap", gap: 6, marginTop: 6 } },
+            [{ id: null, name: "General" }, ...(coursesIndex || [])].map((c) => {
+                const on = (selectedCourseId || null) === (c.id || null);
+                return E("button", {
+                    type: "button", key: c.id || "general", onClick: () => setSelectedCourseId(c.id),
+                    style: {
+                        fontSize: 12.5, padding: "6px 12px", borderRadius: 20,
+                        border: `1px solid ${on ? C.brass : C.line}`, background: on ? C.brass + "22" : "transparent",
+                        color: on ? C.brass : C.inkDim, cursor: "pointer",
+                    },
+                }, c.name);
+            })));
     const [newItemCategory, setNewItemCategory] = useState(null); // category string while the "add item" form is open, else null
     const [itemForm, setItemForm] = useState({ title: "", important: false, notes: "", url: "", pageRef: "", timestamp: "", tabText: "", lessonRef: null });
     const [editingId, setEditingId] = useState(null);
@@ -2596,7 +2649,7 @@ function SprintsTab({ sessions, setSessions, sprints, setSprints, coursesIndex, 
     const resetItemForm = () => setItemForm({ title: "", important: false, notes: "", url: "", pageRef: "", timestamp: "", tabText: "", lessonRef: null });
 
     const startSprint = async () => {
-        const created = await api.sprints.create(startDate);
+        const created = await api.sprints.create(startDate, selectedCourseId);
         setSprints((s) => [created, ...s]);
     };
     const openAddItem = (category) => { resetItemForm(); setEditingId(null); setNewItemCategory(category); };
@@ -2786,11 +2839,12 @@ function SprintsTab({ sessions, setSessions, sprints, setSprints, coursesIndex, 
     if (!sprint) {
         return E("div", { style: { display: "grid", gap: 14 } },
             ModeToggle(),
+            CourseSelector(),
             RecapCard(),
             E(Card, null,
                 E(Label, null, "Start a sprint"),
                 E("div", { style: { display: "grid", gridTemplateColumns: "1fr auto", gap: 10, alignItems: "end" } },
-                    E("div", null, E(Label, null, "Start date (runs 14 days)"), E(Input, { type: "date", value: startDate, onChange: (e) => setStartDate(e.target.value) })),
+                    E("div", null, E(Label, null, "Start date (runs ", sprintLengthLabel, ")"), E(Input, { type: "date", value: startDate, onChange: (e) => setStartDate(e.target.value) })),
                     E(Btn, { onClick: startSprint }, "Start sprint"))),
             pastSprints.length > 0 && E(Card, null,
                 E(Label, null, "Earlier sprints"),
@@ -2811,6 +2865,7 @@ function SprintsTab({ sessions, setSessions, sprints, setSprints, coursesIndex, 
 
     return E("div", { style: { display: "grid", gap: 14 } },
         ModeToggle(),
+        CourseSelector(),
         RecapCard(),
         carryPicker && E(Card, { style: { border: `1px solid ${C.brass}` } },
             E(Label, null, "End sprint — carry forward unfinished items?"),
@@ -2824,7 +2879,7 @@ function SprintsTab({ sessions, setSessions, sprints, setSprints, coursesIndex, 
                 E(Btn, { variant: "ghost", onClick: () => setCarryPicker(null) }, "Cancel"))),
         E(Card, null,
             E("div", { style: { display: "flex", justifyContent: "space-between", alignItems: "baseline", flexWrap: "wrap", gap: 8 } },
-                E(Label, null, "Active sprint"),
+                E(Label, null, "Active sprint — ", selectedCourse ? selectedCourse.name : "General"),
                 E("span", { style: { fontFamily: FONT_MONO, fontSize: 11, color: C.inkFaint } }, fmtDate(sprint.startDate), " → ", fmtDate(sprint.endDate))),
             E("div", { style: { display: "flex", gap: 8, marginTop: 8, flexWrap: "wrap" } },
                 E(Btn, { variant: "ghost", onClick: () => setTab("sessions") }, "Log a session →"),
@@ -3459,7 +3514,7 @@ function CourseMaterialTab({ coursesIndex, setCoursesIndex, notes, setNotes }) {
     const [selectedLessonId, setSelectedLessonId] = useState(null);
     const [courseContent, setCourseContent] = useState(null); // {lessons:[{id,fileType,...}]}
     const [contentLoading, setContentLoading] = useState(false);
-    const [newCourse, setNewCourse] = useState({ name: "", description: "" });
+    const [newCourse, setNewCourse] = useState({ name: "", description: "", sprintLengthValue: 2, sprintLengthUnit: "week" });
     const [uploadError, setUploadError] = useState("");
     const [uploading, setUploading] = useState(false);
     const selectedCourse = coursesIndex.find((c) => c.id === selectedCourseId) || null;
@@ -3484,9 +3539,16 @@ function CourseMaterialTab({ coursesIndex, setCoursesIndex, notes, setNotes }) {
         e.preventDefault();
         if (!newCourse.name.trim())
             return;
-        const entry = await api.courses.create({ name: newCourse.name.trim(), description: newCourse.description.trim() });
+        const entry = await api.courses.create({
+            name: newCourse.name.trim(), description: newCourse.description.trim(),
+            sprintLengthValue: newCourse.sprintLengthValue, sprintLengthUnit: newCourse.sprintLengthUnit,
+        });
         setCoursesIndex((idx) => [...idx, entry]);
-        setNewCourse({ name: "", description: "" });
+        setNewCourse({ name: "", description: "", sprintLengthValue: 2, sprintLengthUnit: "week" });
+    };
+    const updateSprintLength = async (value, unit) => {
+        const updated = await api.courses.patch(selectedCourseId, { sprintLengthValue: value, sprintLengthUnit: unit });
+        setCoursesIndex((idx) => idx.map((c) => (c.id === selectedCourseId ? { ...c, sprintLengthValue: updated.sprintLengthValue, sprintLengthUnit: updated.sprintLengthUnit } : c)));
     };
     const deleteCourse = async (id) => {
         await api.courses.remove(id);
@@ -3546,6 +3608,16 @@ function CourseMaterialTab({ coursesIndex, setCoursesIndex, notes, setNotes }) {
                 React.createElement("form", { onSubmit: addCourse, style: { display: "grid", gap: 10 } },
                     React.createElement(Input, { value: newCourse.name, onChange: (e) => setNewCourse({ ...newCourse, name: e.target.value }), placeholder: "e.g. Justin Guitar Intermediate" }),
                     React.createElement(Input, { value: newCourse.description, onChange: (e) => setNewCourse({ ...newCourse, description: e.target.value }), placeholder: "Description (optional)" }),
+                    React.createElement("div", { style: { display: "flex", gap: 8, alignItems: "center" } },
+                        React.createElement("span", { style: { fontSize: 12.5, color: C.inkFaint } }, "Sprint length:"),
+                        React.createElement(Input, {
+                            type: "number", min: "1", value: newCourse.sprintLengthValue, style: { width: 70 },
+                            onChange: (e) => setNewCourse({ ...newCourse, sprintLengthValue: Number(e.target.value) || 1 }),
+                        }),
+                        React.createElement(Select, {
+                            value: newCourse.sprintLengthUnit,
+                            onChange: (e) => setNewCourse({ ...newCourse, sprintLengthUnit: e.target.value }),
+                        }, ["day", "week", "month", "year"].map((u) => React.createElement("option", { key: u, value: u }, u + "s")))),
                     React.createElement(Btn, { type: "submit" }, "Add course"))),
             coursesIndex.length === 0 ? (React.createElement(Empty, { text: "No courses yet \u2014 add one above." })) : (coursesIndex.map((c) => (React.createElement(Card, { key: c.id, style: { cursor: "pointer" }, onClick: () => openCourse(c.id) },
                 React.createElement("div", { style: { display: "flex", justifyContent: "space-between", alignItems: "start" } },
@@ -3561,7 +3633,17 @@ function CourseMaterialTab({ coursesIndex, setCoursesIndex, notes, setNotes }) {
             React.createElement(Btn, { variant: "ghost", onClick: () => { setSelectedCourseId(null); setCourseContent(null); } }, "\u2190 All courses"),
             React.createElement(Card, null,
                 React.createElement("div", { style: { fontFamily: FONT_DISPLAY, fontSize: 19, fontWeight: 600 } }, selectedCourse === null || selectedCourse === void 0 ? void 0 : selectedCourse.name),
-                (selectedCourse === null || selectedCourse === void 0 ? void 0 : selectedCourse.description) && React.createElement("div", { style: { fontSize: 13, color: C.inkDim, marginTop: 2 } }, selectedCourse.description)),
+                (selectedCourse === null || selectedCourse === void 0 ? void 0 : selectedCourse.description) && React.createElement("div", { style: { fontSize: 13, color: C.inkDim, marginTop: 2 } }, selectedCourse.description),
+                selectedCourse && React.createElement("div", { style: { display: "flex", gap: 8, alignItems: "center", marginTop: 10 } },
+                    React.createElement("span", { style: { fontSize: 12.5, color: C.inkFaint } }, "Sprint length:"),
+                    React.createElement(Input, {
+                        type: "number", min: "1", value: selectedCourse.sprintLengthValue, style: { width: 70 },
+                        onChange: (e) => updateSprintLength(Number(e.target.value) || 1, selectedCourse.sprintLengthUnit),
+                    }),
+                    React.createElement(Select, {
+                        value: selectedCourse.sprintLengthUnit,
+                        onChange: (e) => updateSprintLength(selectedCourse.sprintLengthValue, e.target.value),
+                    }, ["day", "week", "month", "year"].map((u) => React.createElement("option", { key: u, value: u }, u + "s"))))),
             React.createElement(Card, null,
                 React.createElement(Label, null, "Upload a lesson (Word .docx, PDF, RTF, or image)"),
                 React.createElement("input", { type: "file", accept: ".docx,.pdf,.rtf,image/png,image/jpeg,image/gif,image/webp", disabled: uploading, onChange: (e) => { if (e.target.files[0])

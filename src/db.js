@@ -273,6 +273,15 @@ const MIGRATIONS = [
   ALTER TABLE sessions ADD COLUMN actual_minutes_manual REAL;
   ALTER TABLE plans ADD COLUMN planned_minutes REAL;
   `,
+  // Phase 1 of Courses/Sprints/Sessions unification: each course can run its own
+  // sprint cadence (default 2 weeks, matching today's hardcoded behavior exactly),
+  // and sprints now optionally belong to a course. course_id stays nullable so
+  // "general" sprints with no course keep working unchanged.
+  `
+  ALTER TABLE courses ADD COLUMN sprint_length_value INTEGER NOT NULL DEFAULT 2;
+  ALTER TABLE courses ADD COLUMN sprint_length_unit TEXT NOT NULL DEFAULT 'week';
+  ALTER TABLE sprints ADD COLUMN course_id TEXT REFERENCES courses(id);
+  `,
 ];
 
 function runMigrations() {

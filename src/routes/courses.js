@@ -12,8 +12,13 @@ function lessonMeta(row) {
 function lessonFull(row) {
   return { ...lessonMeta(row), html: row.html, text: row.text, dataUrl: row.data_url };
 }
+const SPRINT_LENGTH_UNITS = ["day", "week", "month", "year"];
 function courseEntry(row, lessonRows) {
-  return { id: row.id, name: row.name, description: row.description || "", lessons: lessonRows.map(lessonMeta) };
+  return {
+    id: row.id, name: row.name, description: row.description || "",
+    sprintLengthValue: row.sprint_length_value, sprintLengthUnit: row.sprint_length_unit,
+    lessons: lessonRows.map(lessonMeta),
+  };
 }
 
 const lessonsStmt = db.prepare("SELECT * FROM lessons WHERE course_id = ? ORDER BY sort_order");
@@ -35,10 +40,28 @@ router.get("/:id/content", (req, res) => {
 router.post("/", (req, res) => {
   const name = (req.body?.name || "").trim();
   if (!name) return res.status(400).json({ error: "name is required." });
-  const row = { id: uid(), name, description: (req.body?.description || "").trim() };
-  db.prepare("INSERT INTO courses (id, user_id, name, description) VALUES (?, ?, ?, ?)")
-    .run(row.id, req.user.id, row.name, row.description);
+  const sprintLengthUnit = SPRINT_LENGTH_UNITS.includes(req.body?.sprintLengthUnit) ? req.body.sprintLengthUnit : "week";
+  const row = {
+    id: uid(), name, description: (req.body?.description || "").trim(),
+    sprint_length_value: Number(req.body?.sprintLengthValue) || 2, sprint_length_unit: sprintLengthUnit,
+  };
+  db.prepare("INSERT INTO courses (id, user_id, name, description, sprint_length_value, sprint_length_unit) VALUES (?, ?, ?, ?, ?, ?)")
+    .run(row.id, req.user.id, row.name, row.description, row.sprint_length_value, row.sprint_length_unit);
   res.json(courseEntry(row, []));
+});
+
+router.patch("/:id", (req, res) => {
+  const row = db.prepare("SELECT * FROM courses WHERE id = ? AND user_id = ?").get(req.params.id, req.user.id);
+  if (!row) return res.status(404).json({ error: "Not found." });
+  const name = req.body?.name !== undefined ? String(req.body.name).trim() : row.name;
+  const description = req.body?.description !== undefined ? String(req.body.description).trim() : row.description;
+  const sprint_length_value = req.body?.sprintLengthValue !== undefined ? (Number(req.body.sprintLengthValue) || 2) : row.sprint_length_value;
+  const sprint_length_unit = req.body?.sprintLengthUnit !== undefined
+    ? (SPRINT_LENGTH_UNITS.includes(req.body.sprintLengthUnit) ? req.body.sprintLengthUnit : row.sprint_length_unit)
+    : row.sprint_length_unit;
+  db.prepare("UPDATE courses SET name = ?, description = ?, sprint_length_value = ?, sprint_length_unit = ? WHERE id = ?")
+    .run(name, description, sprint_length_value, sprint_length_unit, row.id);
+  res.json(courseEntry({ ...row, name, description, sprint_length_value, sprint_length_unit }, lessonsStmt.all(row.id)));
 });
 
 router.delete("/:id", (req, res) => {

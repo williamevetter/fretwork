@@ -2,7 +2,7 @@ const express = require("express");
 const { db } = require("../db");
 const { uid, nowISO } = require("../ids");
 const requireAuth = require("../middleware");
-const { CATEGORY_RANK, addDays } = require("../sprintLogic");
+const { CATEGORY_RANK, addDays, sprintLengthDays } = require("../sprintLogic");
 
 const router = express.Router();
 router.use(requireAuth);
@@ -21,9 +21,28 @@ function sprintRow(row, queueRows) {
     return r !== 0 ? r : a.sort_order - b.sort_order;
   });
   return {
-    id: row.id, startDate: row.start_date, endDate: row.end_date, status: row.status,
+    id: row.id, startDate: row.start_date, endDate: row.end_date, status: row.status, courseId: row.course_id,
     carriedFromSprintId: row.carried_from_sprint_id, queue: queue.map(queueItemRow),
   };
+}
+// No courseId ("general" sprint) keeps today's hardcoded 14-day length exactly;
+// a course-linked sprint uses that course's own configurable cadence.
+function computeEndDate(courseId, startDate) {
+  if (!courseId) return addDays(startDate, 13);
+  const course = db.prepare("SELECT sprint_length_value, sprint_length_unit FROM courses WHERE id = ?").get(courseId);
+  if (!course) return addDays(startDate, 13);
+  return addDays(startDate, sprintLengthDays(course.sprint_length_value, course.sprint_length_unit) - 1);
+}
+// courseId=null is its own bucket ("general" sprints) — at most one active sprint
+// per (user, course-or-general) at a time.
+function hasActiveSprintForCourse(userId, courseId, excludeSprintId) {
+  let sql = "SELECT id FROM sprints WHERE user_id = ? AND status = 'active' AND course_id " + (courseId ? "= ?" : "IS NULL");
+  const params = courseId ? [userId, courseId] : [userId];
+  if (excludeSprintId) { sql += " AND id != ?"; params.push(excludeSprintId); }
+  return !!db.prepare(sql).get(...params);
+}
+function activeSprintConflictMessage(courseId) {
+  return courseId ? "This course already has an active sprint — end it first." : "A general sprint is already active — end it first.";
 }
 
 const queueStmt = db.prepare("SELECT * FROM queue_items WHERE sprint_id = ?");
@@ -36,14 +55,22 @@ router.get("/", (req, res) => {
 router.post("/", (req, res) => {
   const startDate = req.body?.startDate;
   if (!startDate) return res.status(400).json({ error: "startDate is required." });
+  const courseId = req.body?.courseId || null;
+  if (courseId) {
+    const course = db.prepare("SELECT id FROM courses WHERE id = ? AND user_id = ?").get(courseId, req.user.id);
+    if (!course) return res.status(404).json({ error: "Course not found." });
+  }
+  if (hasActiveSprintForCourse(req.user.id, courseId, null)) {
+    return res.status(400).json({ error: activeSprintConflictMessage(courseId) });
+  }
   const row = {
-    id: uid(), start_date: startDate, end_date: addDays(startDate, 13),
-    status: "active", carried_from_sprint_id: req.body?.carriedFromSprintId || null,
+    id: uid(), start_date: startDate, end_date: computeEndDate(courseId, startDate),
+    status: "active", course_id: courseId, carried_from_sprint_id: req.body?.carriedFromSprintId || null,
   };
   db.prepare(`
-    INSERT INTO sprints (id, user_id, start_date, end_date, status, carried_from_sprint_id)
-    VALUES (?, ?, ?, ?, ?, ?)
-  `).run(row.id, req.user.id, row.start_date, row.end_date, row.status, row.carried_from_sprint_id);
+    INSERT INTO sprints (id, user_id, start_date, end_date, status, course_id, carried_from_sprint_id)
+    VALUES (?, ?, ?, ?, ?, ?, ?)
+  `).run(row.id, req.user.id, row.start_date, row.end_date, row.status, row.course_id, row.carried_from_sprint_id);
   res.json(sprintRow(row, []));
 });
 
@@ -51,6 +78,9 @@ router.patch("/:id", (req, res) => {
   const row = db.prepare("SELECT * FROM sprints WHERE id = ? AND user_id = ?").get(req.params.id, req.user.id);
   if (!row) return res.status(404).json({ error: "Not found." });
   const status = req.body?.status || row.status;
+  if (status === "active" && row.status !== "active" && hasActiveSprintForCourse(req.user.id, row.course_id, row.id)) {
+    return res.status(400).json({ error: activeSprintConflictMessage(row.course_id) });
+  }
   db.prepare("UPDATE sprints SET status = ? WHERE id = ?").run(status, row.id);
   res.json(sprintRow({ ...row, status }, queueStmt.all(row.id)));
 });
@@ -65,17 +95,17 @@ router.post("/:id/end", (req, res) => {
 
   const newSprint = {
     id: uid(), start_date: req.body?.startDate || nowISO().slice(0, 10),
-    status: "active", carried_from_sprint_id: sprint.id,
+    status: "active", course_id: sprint.course_id, carried_from_sprint_id: sprint.id,
   };
-  newSprint.end_date = addDays(newSprint.start_date, 13);
+  newSprint.end_date = computeEndDate(newSprint.course_id, newSprint.start_date);
 
   db.exec("BEGIN");
   try {
     db.prepare("UPDATE sprints SET status = 'completed' WHERE id = ?").run(sprint.id);
     db.prepare(`
-      INSERT INTO sprints (id, user_id, start_date, end_date, status, carried_from_sprint_id)
-      VALUES (?, ?, ?, ?, ?, ?)
-    `).run(newSprint.id, req.user.id, newSprint.start_date, newSprint.end_date, newSprint.status, newSprint.carried_from_sprint_id);
+      INSERT INTO sprints (id, user_id, start_date, end_date, status, course_id, carried_from_sprint_id)
+      VALUES (?, ?, ?, ?, ?, ?, ?)
+    `).run(newSprint.id, req.user.id, newSprint.start_date, newSprint.end_date, newSprint.status, newSprint.course_id, newSprint.carried_from_sprint_id);
 
     const insertItem = db.prepare(`
       INSERT INTO queue_items (id, sprint_id, category, title, important, notes, ref_json, carried_from_queue_item_id, sort_order)
