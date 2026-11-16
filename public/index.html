@@ -569,6 +569,20 @@ async function parseLessonFile(file) {
     }
     throw new Error(`Unsupported file type: .${ext}. Use Word (.docx), PDF, RTF, or an image.`);
 }
+// Accepts watch?v=, youtu.be/, embed/, and shorts/ forms, with or without extra query params.
+function extractYouTubeId(url) {
+    const patterns = [
+        /youtu\.be\/([A-Za-z0-9_-]{11})/,
+        /youtube\.com\/watch\?.*v=([A-Za-z0-9_-]{11})/,
+        /youtube\.com\/embed\/([A-Za-z0-9_-]{11})/,
+        /youtube\.com\/shorts\/([A-Za-z0-9_-]{11})/,
+    ];
+    for (const re of patterns) {
+        const m = String(url || "").match(re);
+        if (m) return m[1];
+    }
+    return null;
+}
 /* ---------------------------------------------------------
    SMALL UI PRIMITIVES
 --------------------------------------------------------- */
@@ -3570,6 +3584,7 @@ function CourseMaterialTab({ coursesIndex, setCoursesIndex, notes, setNotes, tec
     const [newCourse, setNewCourse] = useState({ name: "", description: "", sprintLengthValue: 2, sprintLengthUnit: "week" });
     const [uploadError, setUploadError] = useState("");
     const [uploading, setUploading] = useState(false);
+    const [youtubeForm, setYoutubeForm] = useState({ title: "", url: "" });
     const selectedCourse = coursesIndex.find((c) => c.id === selectedCourseId) || null;
     const loadCourse = useCallback(async (courseId) => {
         setContentLoading(true);
@@ -3634,6 +3649,31 @@ function CourseMaterialTab({ coursesIndex, setCoursesIndex, notes, setNotes, tec
         }
         catch (e) {
             setUploadError(e.message || "Couldn't read that file.");
+        }
+        setUploading(false);
+    };
+    const addYoutubeLesson = async (e) => {
+        e.preventDefault();
+        if (!selectedCourseId || !youtubeForm.url.trim())
+            return;
+        const videoId = extractYouTubeId(youtubeForm.url.trim());
+        if (!videoId) {
+            setUploadError("That doesn't look like a YouTube link.");
+            return;
+        }
+        setUploading(true);
+        setUploadError("");
+        try {
+            const meta = await api.courses.addLesson(selectedCourseId, {
+                title: youtubeForm.title.trim() || "YouTube video",
+                fileType: "youtube", uploadedDate: todayISO(), dataUrl: youtubeForm.url.trim(),
+            });
+            setCourseContent((c) => ({ lessons: [...((c === null || c === void 0 ? void 0 : c.lessons) || []), { ...meta, dataUrl: youtubeForm.url.trim() }] }));
+            setCoursesIndex((idx) => idx.map((c) => (c.id === selectedCourseId ? { ...c, lessons: [...(c.lessons || []), meta] } : c)));
+            setYoutubeForm({ title: "", url: "" });
+        }
+        catch (err) {
+            setUploadError(err.message || "Couldn't add that link.");
         }
         setUploading(false);
     };
@@ -3708,7 +3748,11 @@ function CourseMaterialTab({ coursesIndex, setCoursesIndex, notes, setNotes, tec
                 React.createElement("input", { type: "file", accept: ".docx,.pdf,.rtf,image/png,image/jpeg,image/gif,image/webp", disabled: uploading, onChange: (e) => { if (e.target.files[0])
                         uploadLesson(e.target.files[0]); e.target.value = ""; }, style: { fontSize: 13, color: C.inkDim } }),
                 uploading && React.createElement("div", { style: { fontSize: 12.5, color: C.brass, marginTop: 8 } }, "Reading file\u2026"),
-                uploadError && React.createElement("div", { style: { fontSize: 12.5, color: C.rust, marginTop: 8 } }, uploadError)),
+                uploadError && React.createElement("div", { style: { fontSize: 12.5, color: C.rust, marginTop: 8 } }, uploadError),
+                E("form", { onSubmit: addYoutubeLesson, style: { display: "flex", gap: 8, marginTop: 12, paddingTop: 12, borderTop: `1px solid ${C.line}`, flexWrap: "wrap" } },
+                    E(Input, { value: youtubeForm.title, onChange: (e) => setYoutubeForm({ ...youtubeForm, title: e.target.value }), placeholder: "Title (optional)", style: { flex: "1 1 160px" } }),
+                    E(Input, { value: youtubeForm.url, onChange: (e) => setYoutubeForm({ ...youtubeForm, url: e.target.value }), placeholder: "Paste a YouTube link\u2026", style: { flex: "2 1 220px" } }),
+                    E(Btn, { type: "submit", disabled: uploading || !youtubeForm.url.trim() }, "Add link"))),
             React.createElement(Card, null,
                 React.createElement(Label, null, "Lessons"),
                 contentLoading ? (React.createElement("div", { style: { color: C.inkFaint, fontSize: 13 } }, "Loading\u2026")) : ((courseContent === null || courseContent === void 0 ? void 0 : courseContent.lessons) || []).length === 0 ? (React.createElement(Empty, { text: "No lessons uploaded yet." })) : (((selectedCourse === null || selectedCourse === void 0 ? void 0 : selectedCourse.lessons) || []).map((l) => (React.createElement("div", { key: l.id, style: {
@@ -3731,6 +3775,8 @@ function CourseMaterialTab({ coursesIndex, setCoursesIndex, notes, setNotes, tec
 function LessonReader({ course, lessonMeta, lessonContent, notes, setNotes, onBack, techniques, coursesIndex, onCoursesChanged }) {
     const [noteForm, setNoteForm] = useState({ pageRef: "", text: "" });
     const [newCurriculumName, setNewCurriculumName] = useState("");
+    const [playYoutubeHere, setPlayYoutubeHere] = useState(false);
+    useEffect(() => { setPlayYoutubeHere(false); }, [lessonMeta && lessonMeta.id]);
     if (!lessonMeta || !lessonContent) {
         return (React.createElement("div", null,
             React.createElement(Btn, { variant: "ghost", onClick: onBack }, "\u2190 Back to lessons"),
@@ -3774,18 +3820,29 @@ function LessonReader({ course, lessonMeta, lessonContent, notes, setNotes, onBa
                 course.name,
                 " \u00B7 ",
                 lessonMeta.fileType.toUpperCase()),
+            lessonContent.fileType === "youtube" && E("div", { style: { display: "flex", gap: 8, marginBottom: 10 } },
+                E(Btn, { variant: playYoutubeHere ? "primary" : "ghost", onClick: () => setPlayYoutubeHere(true) }, "▶ Play here"),
+                E("a", { href: lessonContent.dataUrl, target: "_blank", rel: "noopener noreferrer", style: { textDecoration: "none" } },
+                    E(Btn, { variant: "ghost" }, "Open on YouTube ↗"))),
             React.createElement("div", { style: {
                     background: C.bg2,
                     border: `1px solid ${C.line}`,
                     borderRadius: 8,
-                    padding: lessonContent.fileType === "image" || lessonContent.fileType === "pdf" ? 0 : 14,
+                    padding: ["image", "pdf", "youtube"].includes(lessonContent.fileType) ? 0 : 14,
                     maxHeight: 500,
                     overflow: "auto",
                 } },
                 lessonContent.fileType === "docx" && (React.createElement("div", { style: { fontSize: 14, lineHeight: 1.6, color: C.ink }, dangerouslySetInnerHTML: { __html: lessonContent.html } })),
                 lessonContent.fileType === "rtf" && (React.createElement("pre", { style: { whiteSpace: "pre-wrap", fontFamily: FONT_BODY, fontSize: 14, lineHeight: 1.6, margin: 0, color: C.ink } }, lessonContent.text)),
                 lessonContent.fileType === "pdf" && (React.createElement("iframe", { title: lessonMeta.title, src: lessonContent.dataUrl, style: { width: "100%", height: 500, border: "none" } })),
-                lessonContent.fileType === "image" && (React.createElement("img", { src: lessonContent.dataUrl, alt: lessonMeta.title, style: { maxWidth: "100%", display: "block" } })))),
+                lessonContent.fileType === "image" && (React.createElement("img", { src: lessonContent.dataUrl, alt: lessonMeta.title, style: { maxWidth: "100%", display: "block" } })),
+                lessonContent.fileType === "youtube" && (playYoutubeHere
+                    ? E("iframe", {
+                        title: lessonMeta.title, src: `https://www.youtube.com/embed/${extractYouTubeId(lessonContent.dataUrl)}`,
+                        style: { width: "100%", height: 360, border: "none", display: "block" },
+                        allow: "accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture", allowFullScreen: true,
+                    })
+                    : E("div", { style: { padding: 24, textAlign: "center", color: C.inkFaint, fontSize: 13 } }, "Choose how to watch this video above.")))),
         React.createElement(Card, null,
             React.createElement(Label, null, "Techniques"),
             E(TechniqueTagPicker, { scopeType: "lesson", scopeId: lessonMeta.id, techniques: techniques })),
