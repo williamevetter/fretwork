@@ -26,6 +26,9 @@ router.post("/", (req, res) => {
 router.delete("/:id", (req, res) => {
   const row = db.prepare("SELECT * FROM techniques WHERE id = ? AND user_id = ?").get(req.params.id, req.user.id);
   if (!row) return res.status(404).json({ error: "Not found." });
+  // technique_assignments.technique_id references this row — clear its tags (at every
+  // scope) before deleting, same as every other cascade in this app.
+  db.prepare("DELETE FROM technique_assignments WHERE technique_id = ?").run(req.params.id);
   db.prepare("DELETE FROM techniques WHERE id = ?").run(req.params.id);
   res.json({ ok: true });
 });

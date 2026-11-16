@@ -5,6 +5,7 @@ const { db } = require("../db");
 const { uid, nowISO } = require("../ids");
 const requireAuth = require("../middleware");
 const { CATEGORIES, addDays } = require("../sprintLogic");
+const { syncSessionInheritance } = require("../techniqueAssignments");
 
 const RECORDINGS_DIR = path.join(__dirname, "..", "..", "data", "recordings");
 if (!fs.existsSync(RECORDINGS_DIR)) fs.mkdirSync(RECORDINGS_DIR, { recursive: true });
@@ -76,6 +77,7 @@ router.post("/", (req, res) => {
     INSERT INTO sessions (id, user_id, date, sprint_id, notes, is_ad_hoc, planned_minutes, actual_minutes_manual, created_at, updated_at)
     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `).run(row.id, req.user.id, row.date, row.sprint_id, row.notes, row.is_ad_hoc, row.planned_minutes, row.actual_minutes_manual, row.created_at, row.updated_at);
+  if (row.sprint_id) syncSessionInheritance(req.user.id, row.id, row.sprint_id);
   res.json(sessionWithBlocks(row, []));
 });
 
@@ -97,6 +99,7 @@ router.patch("/:id", (req, res) => {
     UPDATE sessions SET notes = ?, date = ?, sprint_id = ?, is_ad_hoc = ?, planned_minutes = ?, actual_minutes_manual = ?, updated_at = ?
     WHERE id = ?
   `).run(notes, date, sprint_id, is_ad_hoc, planned_minutes, actual_minutes_manual, updated_at, row.id);
+  if (sprint_id !== row.sprint_id) syncSessionInheritance(req.user.id, row.id, sprint_id);
   res.json(sessionWithBlocks({ ...row, notes, date, sprint_id, is_ad_hoc, planned_minutes, actual_minutes_manual, updated_at }, blocksStmt.all(row.id)));
 });
 
@@ -110,6 +113,7 @@ router.delete("/:id", (req, res) => {
     // first — deleting blocks while a recording still points at one violates the FK.
     db.prepare("DELETE FROM audio_recordings WHERE session_id = ?").run(row.id);
     db.prepare("DELETE FROM session_blocks WHERE session_id = ?").run(row.id);
+    db.prepare("DELETE FROM technique_assignments WHERE scope_type = 'session' AND scope_id = ?").run(row.id);
     db.prepare("DELETE FROM sessions WHERE id = ?").run(row.id);
     db.exec("COMMIT");
   } catch (e) {

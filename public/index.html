@@ -103,6 +103,11 @@ const api = {
     create: (body) => apiCall("POST", "/contacts", body),
     remove: (id) => apiCall("DELETE", `/contacts/${id}`),
   },
+  tags: {
+    list: (scopeType, scopeId) => apiCall("GET", `/tags/${scopeType}/${scopeId}`),
+    assign: (scopeType, scopeId, techniqueId) => apiCall("POST", `/tags/${scopeType}/${scopeId}`, { techniqueId }),
+    unassign: (scopeType, scopeId, techniqueId) => apiCall("DELETE", `/tags/${scopeType}/${scopeId}/${techniqueId}`),
+  },
   gear: {
     list: () => apiCall("GET", "/gear"),
     create: (body) => apiCall("POST", "/gear", body),
@@ -124,6 +129,9 @@ const api = {
     remove: (id) => apiCall("DELETE", `/courses/${id}`),
     addLesson: (courseId, body) => apiCall("POST", `/courses/${courseId}/lessons`, body),
     removeLesson: (courseId, lessonId) => apiCall("DELETE", `/courses/${courseId}/lessons/${lessonId}`),
+    linkLessonToCourse: (lessonId, courseId) => apiCall("POST", `/courses/lessons/${lessonId}/courses`, { courseId }),
+    unlinkLessonFromCourse: (lessonId, courseId) => apiCall("DELETE", `/courses/lessons/${lessonId}/courses/${courseId}`),
+    createFromLesson: (body) => apiCall("POST", "/courses/from-lesson", body),
   },
   notes: {
     list: () => apiCall("GET", "/notes"),
@@ -647,6 +655,45 @@ function HoursMinutesInput({ value, onChange, disabled }) {
             onChange: (e) => commit(h === "" ? "0" : h, e.target.value), style: { width: 64 },
         }),
         E("span", { style: { fontSize: 12, color: C.inkFaint } }, "m"));
+}
+// Technique tagging for a Course/Sprint/Session/Lesson. Tags inherited from a parent
+// (Course -> its Sprints -> their Sessions) show as disabled chips — they can only be
+// removed at the level that actually set them, same place `inheritedFrom` points to.
+function TechniqueTagPicker({ scopeType, scopeId, techniques }) {
+    const [assignments, setAssignments] = useState(null);
+    const load = () => { api.tags.list(scopeType, scopeId).then(setAssignments).catch(() => setAssignments([])); };
+    useEffect(load, [scopeType, scopeId]);
+    const toggle = async (techniqueId, current) => {
+        if (current && current.inheritedFrom)
+            return; // inherited — only removable at its source scope
+        if (current)
+            await api.tags.unassign(scopeType, scopeId, techniqueId);
+        else
+            await api.tags.assign(scopeType, scopeId, techniqueId);
+        load();
+    };
+    if (!assignments)
+        return null;
+    if ((techniques || []).length === 0)
+        return E("div", { style: { fontSize: 12.5, color: C.inkFaint } }, "Add techniques first (Techniques tab) to tag this with any.");
+    return E("div", { style: { display: "flex", flexWrap: "wrap", gap: 6 } },
+        techniques.map((t) => {
+            const current = assignments.find((a) => a.techniqueId === t.id);
+            const inherited = !!(current && current.inheritedFrom);
+            const on = !!current;
+            return E("button", {
+                type: "button", key: t.id, title: inherited ? `Inherited from ${current.inheritedFrom.split(":")[0]} — remove it there` : undefined,
+                onClick: () => toggle(t.id, current),
+                style: {
+                    fontSize: 12, padding: "5px 10px", borderRadius: 20,
+                    border: `1px solid ${on ? C.brass : C.line}`,
+                    background: on ? C.brass + "22" : "transparent",
+                    color: on ? C.brass : C.inkDim,
+                    cursor: inherited ? "default" : "pointer",
+                    opacity: inherited ? 0.65 : 1,
+                },
+            }, t.name, inherited ? " · inherited" : "");
+        }));
 }
 function fmtMin(min) {
     const whole = Math.round(Number(min) || 0);
@@ -1444,10 +1491,10 @@ function App({ me }) {
             tab === "sessions" && (React.createElement(SessionsTab, { data: data, sessions: sessions, setSessions: setSessions, plans: plans, setPlans: setPlans, coursesIndex: coursesIndex, sprints: sprints, editSessionId: editSessionId, setEditSessionId: setEditSessionId })),
             tab === "search" && E(SessionsSearchTab, { sessions: sessions, techniques: techniques, sprints: sprints, onEditSession: (id) => { setEditSessionId(id); setTab("sessions"); } }),
             tab === "recordings" && E(RecordingsTab, { sessions: sessions, setSessions: setSessions, sprints: sprints }),
-            tab === "sprints" && E(SprintsTab, { sessions: sessions, setSessions: setSessions, sprints: sprints, setSprints: setSprints, coursesIndex: coursesIndex, setTab: setTab }),
+            tab === "sprints" && E(SprintsTab, { sessions: sessions, setSessions: setSessions, sprints: sprints, setSprints: setSprints, coursesIndex: coursesIndex, setTab: setTab, techniques: techniques }),
             tab === "techniques" && React.createElement(TechniquesTab, { sessions: sessions, techniques: techniques, setTechniques: setTechniques }),
             tab === "topics" && React.createElement(TopicsTab, { topics: topics, setTopics: setTopics, me: me }),
-            tab === "courses" && (React.createElement(CourseMaterialTab, { coursesIndex: coursesIndex, setCoursesIndex: setCoursesIndex, notes: notes, setNotes: setNotes })),
+            tab === "courses" && (React.createElement(CourseMaterialTab, { coursesIndex: coursesIndex, setCoursesIndex: setCoursesIndex, notes: notes, setNotes: setNotes, techniques: techniques })),
             tab === "gear" && React.createElement(GearTab, { gear: gear, setGear: setGear }),
             tab === "theory" && React.createElement(TheoryTab, { theory: theory, setTheory: setTheory }),
             tab === "trainer" && React.createElement(TrainerTab, null),
@@ -2318,7 +2365,10 @@ function SessionsTab({ data, sessions, setSessions, plans, setPlans, coursesInde
                         E(HoursMinutesInput, { value: draft.plannedMinutes, onChange: setDraftPlannedMinutes })),
                     E("div", null,
                         E(Label, null, "Actual time"),
-                        E(HoursMinutesInput, { value: draft.actualMinutesManual, onChange: setDraftActualMinutes })))),
+                        E(HoursMinutesInput, { value: draft.actualMinutesManual, onChange: setDraftActualMinutes }))),
+                E("div", { style: { marginTop: 10, paddingTop: 10, borderTop: `1px solid ${C.line}` } },
+                    E(Label, null, "Techniques"),
+                    E(TechniqueTagPicker, { scopeType: "session", scopeId: draft.id, techniques: data.techniques }))),
 
             draft && E(Card, null,
                 E(Label, null, "Notes"),
@@ -2607,7 +2657,7 @@ function RecordingsTab({ sessions, setSessions, sprints }) {
 /* ---------------------------------------------------------
    SPRINTS TAB
 --------------------------------------------------------- */
-function SprintsTab({ sessions, setSessions, sprints, setSprints, coursesIndex, setTab }) {
+function SprintsTab({ sessions, setSessions, sprints, setSprints, coursesIndex, setTab, techniques }) {
     // Each course runs its own concurrent sprint now — this tab is scoped to whichever
     // one is selected, "General" (no course) being the pre-existing single-sprint behavior.
     const [selectedCourseId, setSelectedCourseId] = useState(null);
@@ -2884,7 +2934,10 @@ function SprintsTab({ sessions, setSessions, sprints, setSprints, coursesIndex, 
             E("div", { style: { display: "flex", gap: 8, marginTop: 8, flexWrap: "wrap" } },
                 E(Btn, { variant: "ghost", onClick: () => setTab("sessions") }, "Log a session →"),
                 E(Btn, { variant: "ghost", onClick: () => showRecap(sprint) }, "Recap"),
-                E(Btn, { variant: "danger", onClick: openEndSprint }, "End sprint"))),
+                E(Btn, { variant: "danger", onClick: openEndSprint }, "End sprint")),
+            E("div", { style: { marginTop: 10, paddingTop: 10, borderTop: `1px solid ${C.line}` } },
+                E(Label, null, "Techniques"),
+                E(TechniqueTagPicker, { scopeType: "sprint", scopeId: sprint.id, techniques: techniques }))),
         ["warmup", "content", "cooldown"].map((phase) => E(Card, { key: phase },
             E("div", { style: { display: "flex", justifyContent: "space-between", alignItems: "center" } },
                 E(Label, null, PHASE_LABEL[phase]),
@@ -3508,7 +3561,7 @@ function NeckQuizMode({ onBack }) {
 /* ---------------------------------------------------------
    COURSE MATERIAL — courses, uploaded lessons, reader, notes index
 --------------------------------------------------------- */
-function CourseMaterialTab({ coursesIndex, setCoursesIndex, notes, setNotes }) {
+function CourseMaterialTab({ coursesIndex, setCoursesIndex, notes, setNotes, techniques }) {
     const [view, setView] = useState("library"); // library | notesIndex
     const [selectedCourseId, setSelectedCourseId] = useState(null);
     const [selectedLessonId, setSelectedLessonId] = useState(null);
@@ -3550,6 +3603,9 @@ function CourseMaterialTab({ coursesIndex, setCoursesIndex, notes, setNotes }) {
         const updated = await api.courses.patch(selectedCourseId, { sprintLengthValue: value, sprintLengthUnit: unit });
         setCoursesIndex((idx) => idx.map((c) => (c.id === selectedCourseId ? { ...c, sprintLengthValue: updated.sprintLengthValue, sprintLengthUnit: updated.sprintLengthUnit } : c)));
     };
+    // Full refresh after a lesson<->course link changes or a course is spun up from a
+    // lesson — simplest correct way to pick up every course's updated lesson union.
+    const refreshCourses = () => { api.courses.list().then(setCoursesIndex); };
     const deleteCourse = async (id) => {
         await api.courses.remove(id);
         setCoursesIndex((idx) => idx.filter((c) => c.id !== id));
@@ -3643,7 +3699,10 @@ function CourseMaterialTab({ coursesIndex, setCoursesIndex, notes, setNotes }) {
                     React.createElement(Select, {
                         value: selectedCourse.sprintLengthUnit,
                         onChange: (e) => updateSprintLength(selectedCourse.sprintLengthValue, e.target.value),
-                    }, ["day", "week", "month", "year"].map((u) => React.createElement("option", { key: u, value: u }, u + "s"))))),
+                    }, ["day", "week", "month", "year"].map((u) => React.createElement("option", { key: u, value: u }, u + "s")))),
+                selectedCourse && React.createElement("div", { style: { marginTop: 10, paddingTop: 10, borderTop: `1px solid ${C.line}` } },
+                    React.createElement(Label, null, "Techniques"),
+                    E(TechniqueTagPicker, { scopeType: "course", scopeId: selectedCourse.id, techniques: techniques }))),
             React.createElement(Card, null,
                 React.createElement(Label, null, "Upload a lesson (Word .docx, PDF, RTF, or image)"),
                 React.createElement("input", { type: "file", accept: ".docx,.pdf,.rtf,image/png,image/jpeg,image/gif,image/webp", disabled: uploading, onChange: (e) => { if (e.target.files[0])
@@ -3667,15 +3726,34 @@ function CourseMaterialTab({ coursesIndex, setCoursesIndex, notes, setNotes }) {
                             " \u00B7 ",
                             l.uploadedDate)),
                     React.createElement(Btn, { variant: "danger", onClick: (e) => { e.stopPropagation(); deleteLesson(l.id); }, style: { fontSize: 11, padding: "5px 8px", flexShrink: 0 } }, "\u2715")))))))),
-        view === "library" && selectedCourseId && selectedLessonId && (React.createElement(LessonReader, { course: selectedCourse, lessonMeta: ((selectedCourse === null || selectedCourse === void 0 ? void 0 : selectedCourse.lessons) || []).find((l) => l.id === selectedLessonId), lessonContent: ((courseContent === null || courseContent === void 0 ? void 0 : courseContent.lessons) || []).find((l) => l.id === selectedLessonId), notes: notes.filter((n) => n.lessonId === selectedLessonId), setNotes: setNotes, onBack: () => setSelectedLessonId(null) }))));
+        view === "library" && selectedCourseId && selectedLessonId && (React.createElement(LessonReader, { course: selectedCourse, lessonMeta: ((selectedCourse === null || selectedCourse === void 0 ? void 0 : selectedCourse.lessons) || []).find((l) => l.id === selectedLessonId), lessonContent: ((courseContent === null || courseContent === void 0 ? void 0 : courseContent.lessons) || []).find((l) => l.id === selectedLessonId), notes: notes.filter((n) => n.lessonId === selectedLessonId), setNotes: setNotes, onBack: () => setSelectedLessonId(null), techniques: techniques, coursesIndex: coursesIndex, onCoursesChanged: refreshCourses }))));
 }
-function LessonReader({ course, lessonMeta, lessonContent, notes, setNotes, onBack }) {
+function LessonReader({ course, lessonMeta, lessonContent, notes, setNotes, onBack, techniques, coursesIndex, onCoursesChanged }) {
     const [noteForm, setNoteForm] = useState({ pageRef: "", text: "" });
+    const [newCurriculumName, setNewCurriculumName] = useState("");
     if (!lessonMeta || !lessonContent) {
         return (React.createElement("div", null,
             React.createElement(Btn, { variant: "ghost", onClick: onBack }, "\u2190 Back to lessons"),
             React.createElement(Empty, { text: "This lesson couldn't be loaded." })));
     }
+    // A course's lesson list is already the primary+extra union (GET /courses), so
+    // "which courses include this lesson" is just: which courses' lists contain it.
+    const linkedCourseIds = (coursesIndex || []).filter((c) => (c.lessons || []).some((l) => l.id === lessonMeta.id)).map((c) => c.id);
+    const toggleCourseLink = async (courseId) => {
+        if (courseId === lessonMeta.primaryCourseId) return; // primary \u2014 not removable here
+        if (linkedCourseIds.includes(courseId))
+            await api.courses.unlinkLessonFromCourse(lessonMeta.id, courseId);
+        else
+            await api.courses.linkLessonToCourse(lessonMeta.id, courseId);
+        onCoursesChanged();
+    };
+    const createCurriculum = async (e) => {
+        e.preventDefault();
+        if (!newCurriculumName.trim()) return;
+        await api.courses.createFromLesson({ lessonId: lessonMeta.id, name: newCurriculumName.trim() });
+        setNewCurriculumName("");
+        onCoursesChanged();
+    };
     const addNote = async (e) => {
         e.preventDefault();
         if (!noteForm.text.trim())
@@ -3708,6 +3786,26 @@ function LessonReader({ course, lessonMeta, lessonContent, notes, setNotes, onBa
                 lessonContent.fileType === "rtf" && (React.createElement("pre", { style: { whiteSpace: "pre-wrap", fontFamily: FONT_BODY, fontSize: 14, lineHeight: 1.6, margin: 0, color: C.ink } }, lessonContent.text)),
                 lessonContent.fileType === "pdf" && (React.createElement("iframe", { title: lessonMeta.title, src: lessonContent.dataUrl, style: { width: "100%", height: 500, border: "none" } })),
                 lessonContent.fileType === "image" && (React.createElement("img", { src: lessonContent.dataUrl, alt: lessonMeta.title, style: { maxWidth: "100%", display: "block" } })))),
+        React.createElement(Card, null,
+            React.createElement(Label, null, "Techniques"),
+            E(TechniqueTagPicker, { scopeType: "lesson", scopeId: lessonMeta.id, techniques: techniques })),
+        React.createElement(Card, null,
+            React.createElement(Label, null, "Also show this lesson under…"),
+            E("div", { style: { display: "flex", flexWrap: "wrap", gap: 6 } },
+                (coursesIndex || []).filter((c) => c.id !== lessonMeta.primaryCourseId).map((c) => {
+                    const on = linkedCourseIds.includes(c.id);
+                    return E("button", {
+                        type: "button", key: c.id, onClick: () => toggleCourseLink(c.id),
+                        style: {
+                            fontSize: 12, padding: "5px 10px", borderRadius: 20,
+                            border: `1px solid ${on ? C.brass : C.line}`, background: on ? C.brass + "22" : "transparent",
+                            color: on ? C.brass : C.inkDim, cursor: "pointer",
+                        },
+                    }, c.name);
+                })),
+            E("form", { onSubmit: createCurriculum, style: { display: "flex", gap: 8, marginTop: 10, paddingTop: 10, borderTop: `1px solid ${C.line}` } },
+                E(Input, { value: newCurriculumName, onChange: (e) => setNewCurriculumName(e.target.value), placeholder: "Create a new curriculum from this document…" }),
+                E(Btn, { type: "submit" }, "Create"))),
         React.createElement(Card, null,
             React.createElement(Label, null, "Add a note"),
             React.createElement("form", { onSubmit: addNote, style: { display: "grid", gap: 10 } },

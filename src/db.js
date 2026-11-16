@@ -282,6 +282,33 @@ const MIGRATIONS = [
   ALTER TABLE courses ADD COLUMN sprint_length_unit TEXT NOT NULL DEFAULT 'week';
   ALTER TABLE sprints ADD COLUMN course_id TEXT REFERENCES courses(id);
   `,
+  // Phase 2: techniques become tags assignable to a Course, Sprint, Session, or Lesson.
+  // inherited_from tracks provenance ("course:<id>" / "sprint:<id>") so cascaded-down
+  // copies can be cleanly un-cascaded without touching a tag someone added directly.
+  `
+  CREATE TABLE technique_assignments (
+    id TEXT PRIMARY KEY,
+    user_id TEXT NOT NULL REFERENCES users(id),
+    technique_id TEXT NOT NULL REFERENCES techniques(id),
+    scope_type TEXT NOT NULL,
+    scope_id TEXT NOT NULL,
+    inherited_from TEXT,
+    created_at TEXT NOT NULL
+  );
+  CREATE UNIQUE INDEX idx_tech_assign_unique ON technique_assignments(technique_id, scope_type, scope_id);
+  CREATE INDEX idx_tech_assign_scope ON technique_assignments(scope_type, scope_id);
+  `,
+  // Phase 3: a lesson can now be linked to more than one course. lessons.course_id
+  // stays the lesson's primary/original course; this table holds only the extra links.
+  `
+  CREATE TABLE lesson_courses (
+    id TEXT PRIMARY KEY,
+    lesson_id TEXT NOT NULL REFERENCES lessons(id),
+    course_id TEXT NOT NULL REFERENCES courses(id),
+    created_at TEXT NOT NULL
+  );
+  CREATE UNIQUE INDEX idx_lesson_courses_unique ON lesson_courses(lesson_id, course_id);
+  `,
 ];
 
 function runMigrations() {

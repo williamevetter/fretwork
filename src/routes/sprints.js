@@ -3,6 +3,7 @@ const { db } = require("../db");
 const { uid, nowISO } = require("../ids");
 const requireAuth = require("../middleware");
 const { CATEGORY_RANK, addDays, sprintLengthDays } = require("../sprintLogic");
+const { inheritForNewSprint } = require("../techniqueAssignments");
 
 const router = express.Router();
 router.use(requireAuth);
@@ -71,6 +72,7 @@ router.post("/", (req, res) => {
     INSERT INTO sprints (id, user_id, start_date, end_date, status, course_id, carried_from_sprint_id)
     VALUES (?, ?, ?, ?, ?, ?, ?)
   `).run(row.id, req.user.id, row.start_date, row.end_date, row.status, row.course_id, row.carried_from_sprint_id);
+  if (courseId) inheritForNewSprint(req.user.id, row.id, courseId);
   res.json(sprintRow(row, []));
 });
 
@@ -119,6 +121,7 @@ router.post("/:id/end", (req, res) => {
     db.exec("ROLLBACK");
     throw e;
   }
+  if (newSprint.course_id) inheritForNewSprint(req.user.id, newSprint.id, newSprint.course_id);
 
   res.json({
     endedSprint: sprintRow({ ...sprint, status: "completed" }, items),
