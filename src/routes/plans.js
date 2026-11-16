@@ -39,6 +39,25 @@ router.post("/", (req, res) => {
   res.json(rowToPlan(row));
 });
 
+router.patch("/:id", (req, res) => {
+  const row = db.prepare("SELECT * FROM plans WHERE id = ? AND user_id = ?").get(req.params.id, req.user.id);
+  if (!row) return res.status(404).json({ error: "Not found." });
+  const date = req.body?.date !== undefined ? req.body.date : row.date;
+  const goals = req.body?.goals !== undefined ? req.body.goals : row.goals;
+  const content = req.body?.content !== undefined ? req.body.content : row.content;
+  const plannedMinutes = req.body?.plannedMinutes !== undefined
+    ? (req.body.plannedMinutes != null ? Number(req.body.plannedMinutes) : null)
+    : row.planned_minutes;
+  const techniquesJson = req.body?.techniques !== undefined ? JSON.stringify(req.body.techniques) : row.techniques_json;
+  const lessonRefsJson = req.body?.lessonRefs !== undefined ? JSON.stringify(req.body.lessonRefs) : row.lesson_refs_json;
+  if (!date || !goals) return res.status(400).json({ error: "date and goals are required." });
+  db.prepare(`
+    UPDATE plans SET date = ?, content = ?, goals = ?, planned_minutes = ?, techniques_json = ?, lesson_refs_json = ?
+    WHERE id = ?
+  `).run(date, content, goals, plannedMinutes, techniquesJson, lessonRefsJson, row.id);
+  res.json(rowToPlan({ ...row, date, content, goals, planned_minutes: plannedMinutes, techniques_json: techniquesJson, lesson_refs_json: lessonRefsJson }));
+});
+
 router.delete("/:id", (req, res) => {
   const row = db.prepare("SELECT * FROM plans WHERE id = ? AND user_id = ?").get(req.params.id, req.user.id);
   if (!row) return res.status(404).json({ error: "Not found." });

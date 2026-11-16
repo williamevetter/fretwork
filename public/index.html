@@ -89,6 +89,7 @@ const api = {
   plans: {
     list: () => apiCall("GET", "/plans"),
     create: (body) => apiCall("POST", "/plans", body),
+    patch: (id, body) => apiCall("PATCH", `/plans/${id}`, body),
     remove: (id) => apiCall("DELETE", `/plans/${id}`),
   },
   topics: {
@@ -2024,7 +2025,13 @@ function SessionSummaryRow({ s, techniques, onEdit, onDelete }) {
 }
 function SessionsTab({ data, sessions, setSessions, plans, setPlans, coursesIndex, sprints, editSessionId, setEditSessionId }) {
     const [mode, setMode] = useState("log");
-    const [planForm, setPlanForm] = useState({ date: todayISO(), content: "", goals: "", plannedMinutes: null, techniques: [], lessonRefs: [] });
+    const BLANK_PLAN_FORM = { date: todayISO(), content: "", goals: "", plannedMinutes: null, techniques: [], lessonRefs: [] };
+    const [planForm, setPlanForm] = useState(BLANK_PLAN_FORM);
+    // Editing an existing plan (not starting it) is staged, not auto-saved — "Save
+    // changes" only shows up once the form actually differs from what was loaded.
+    const [editingPlanId, setEditingPlanId] = useState(null);
+    const [originalPlanForm, setOriginalPlanForm] = useState(null);
+    const planFormDirty = editingPlanId && originalPlanForm && JSON.stringify(planForm) !== JSON.stringify(originalPlanForm);
     const allLessons = useMemo(() => flattenLessons(coursesIndex), [coursesIndex]);
     // Which course's sprint a new session should pull its queue/budget from — each
     // course now runs its own concurrent sprint, so this has to be chosen explicitly
@@ -2292,9 +2299,30 @@ function SessionsTab({ data, sessions, setSessions, plans, setPlans, coursesInde
 
     const submitPlan = async (e) => {
         e.preventDefault();
-        const created = await api.plans.create(planForm);
-        setPlans((p) => [created, ...p]);
-        setPlanForm({ date: todayISO(), content: "", goals: "", plannedMinutes: null, techniques: [], lessonRefs: [] });
+        if (editingPlanId) {
+            const updated = await api.plans.patch(editingPlanId, planForm);
+            setPlans((p) => p.map((x) => (x.id === editingPlanId ? updated : x)));
+            setEditingPlanId(null);
+            setOriginalPlanForm(null);
+        } else {
+            const created = await api.plans.create(planForm);
+            setPlans((p) => [created, ...p]);
+        }
+        setPlanForm(BLANK_PLAN_FORM);
+    };
+    // Edit an existing planned session without starting it — loads it into the same
+    // form used to create one, switching that form into "editing" mode.
+    const startEditPlan = (p) => {
+        const formState = { date: p.date, content: p.content, goals: p.goals, plannedMinutes: p.plannedMinutes, techniques: p.techniques, lessonRefs: p.lessonRefs };
+        setPlanForm(formState);
+        setOriginalPlanForm(formState);
+        setEditingPlanId(p.id);
+        setMode("plan");
+    };
+    const cancelEditPlan = () => {
+        setEditingPlanId(null);
+        setOriginalPlanForm(null);
+        setPlanForm(BLANK_PLAN_FORM);
     };
     const deleteSession = async (id) => { await api.sessions.remove(id); setSessions((s) => s.filter((x) => x.id !== id)); };
     const deletePlan = async (id) => { await api.plans.remove(id); setPlans((p) => p.filter((x) => x.id !== id)); };
@@ -2503,6 +2531,7 @@ function SessionsTab({ data, sessions, setSessions, plans, setPlans, coursesInde
                 E(Btn, { variant: "ghost", onClick: closeDraft, disabled: !!runningBlock }, "Done for now"))),
         mode === "plan" && (React.createElement(Card, null,
             React.createElement("form", { onSubmit: submitPlan, style: { display: "grid", gap: 12 } },
+                editingPlanId && E("div", { style: { fontSize: 12.5, color: C.brass, fontFamily: FONT_MONO } }, "Editing planned session"),
                 React.createElement("div", null,
                     React.createElement(Label, null, "Target date"),
                     React.createElement(Input, { type: "date", value: planForm.date, onChange: (e) => setPlanForm({ ...planForm, date: e.target.value }), required: true })),
@@ -2551,7 +2580,11 @@ function SessionsTab({ data, sessions, setSessions, plans, setPlans, coursesInde
                                 "\u00B7 ",
                                 l.courseName)));
                     })))),
-                React.createElement(Btn, { type: "submit" }, "Save plan")))),
+                editingPlanId
+                    ? E("div", { style: { display: "flex", gap: 8 } },
+                        planFormDirty && E(Btn, { type: "submit" }, "Save changes"),
+                        E(Btn, { variant: "ghost", type: "button", onClick: cancelEditPlan }, "Cancel"))
+                    : React.createElement(Btn, { type: "submit" }, "Save plan")))),
         React.createElement(Card, null,
             React.createElement(Label, null, "Planned sessions"),
             upcomingPlans.length === 0 ? (React.createElement(Empty, { text: "Nothing planned yet." })) : (upcomingPlans.map((p) => (React.createElement("div", { key: p.id, style: { padding: "10px 0", borderBottom: `1px solid ${C.line}` } },
@@ -2567,6 +2600,7 @@ function SessionsTab({ data, sessions, setSessions, plans, setPlans, coursesInde
                             p.lessonRefs.map((r) => r.label).join(" · ")))),
                     React.createElement("div", { style: { display: "flex", gap: 6, flexShrink: 0 } },
                         React.createElement(Btn, { variant: "ghost", onClick: () => startPlanNow(p), style: { fontSize: 11.5, padding: "6px 9px" } }, "▶ Start session now"),
+                        React.createElement(Btn, { variant: "ghost", onClick: () => startEditPlan(p), style: { fontSize: 11.5, padding: "6px 9px" } }, "Edit"),
                         React.createElement(Btn, { variant: "danger", onClick: () => deletePlan(p.id), style: { fontSize: 11.5, padding: "6px 9px" } }, "\u2715")))))))),
         React.createElement(Card, null,
             React.createElement(Label, null, "Session history"),
