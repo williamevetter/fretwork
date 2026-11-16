@@ -15,6 +15,7 @@ function rowToPlan(row) {
     plannedMinutes: row.planned_minutes != null ? row.planned_minutes : null,
     techniques: JSON.parse(row.techniques_json || "[]"),
     lessonRefs: JSON.parse(row.lesson_refs_json || "[]"),
+    blocks: JSON.parse(row.blocks_json || "[]"),
   };
 }
 
@@ -24,18 +25,19 @@ router.get("/", (req, res) => {
 });
 
 router.post("/", (req, res) => {
-  const { date, content, goals, techniques, lessonRefs, plannedMinutes } = req.body || {};
+  const { date, content, goals, techniques, lessonRefs, plannedMinutes, blocks } = req.body || {};
   if (!date || !goals) return res.status(400).json({ error: "date and goals are required." });
   const row = {
     id: uid(), date, content: content || "", goals,
     planned_minutes: plannedMinutes != null ? Number(plannedMinutes) : null,
     techniques_json: JSON.stringify(techniques || []),
     lesson_refs_json: JSON.stringify(lessonRefs || []),
+    blocks_json: JSON.stringify(blocks || []),
   };
   db.prepare(`
-    INSERT INTO plans (id, user_id, date, content, goals, planned_minutes, techniques_json, lesson_refs_json)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-  `).run(row.id, req.user.id, row.date, row.content, row.goals, row.planned_minutes, row.techniques_json, row.lesson_refs_json);
+    INSERT INTO plans (id, user_id, date, content, goals, planned_minutes, techniques_json, lesson_refs_json, blocks_json)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+  `).run(row.id, req.user.id, row.date, row.content, row.goals, row.planned_minutes, row.techniques_json, row.lesson_refs_json, row.blocks_json);
   res.json(rowToPlan(row));
 });
 
@@ -50,12 +52,13 @@ router.patch("/:id", (req, res) => {
     : row.planned_minutes;
   const techniquesJson = req.body?.techniques !== undefined ? JSON.stringify(req.body.techniques) : row.techniques_json;
   const lessonRefsJson = req.body?.lessonRefs !== undefined ? JSON.stringify(req.body.lessonRefs) : row.lesson_refs_json;
+  const blocksJson = req.body?.blocks !== undefined ? JSON.stringify(req.body.blocks) : row.blocks_json;
   if (!date || !goals) return res.status(400).json({ error: "date and goals are required." });
   db.prepare(`
-    UPDATE plans SET date = ?, content = ?, goals = ?, planned_minutes = ?, techniques_json = ?, lesson_refs_json = ?
+    UPDATE plans SET date = ?, content = ?, goals = ?, planned_minutes = ?, techniques_json = ?, lesson_refs_json = ?, blocks_json = ?
     WHERE id = ?
-  `).run(date, content, goals, plannedMinutes, techniquesJson, lessonRefsJson, row.id);
-  res.json(rowToPlan({ ...row, date, content, goals, planned_minutes: plannedMinutes, techniques_json: techniquesJson, lesson_refs_json: lessonRefsJson }));
+  `).run(date, content, goals, plannedMinutes, techniquesJson, lessonRefsJson, blocksJson, row.id);
+  res.json(rowToPlan({ ...row, date, content, goals, planned_minutes: plannedMinutes, techniques_json: techniquesJson, lesson_refs_json: lessonRefsJson, blocks_json: blocksJson }));
 });
 
 router.delete("/:id", (req, res) => {

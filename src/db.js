@@ -309,6 +309,13 @@ const MIGRATIONS = [
   );
   CREATE UNIQUE INDEX idx_lesson_courses_unique ON lesson_courses(lesson_id, course_id);
   `,
+  // Planned blocks on a Plan — a flat JSON array (same precedent as techniques_json /
+  // lesson_refs_json on this same table), not a child table: these are frontend-owned,
+  // never individually queried/joined, and get copied into real session_blocks rows
+  // only once "Start session now" turns the plan into a live session.
+  `
+  ALTER TABLE plans ADD COLUMN blocks_json TEXT;
+  `,
 ];
 
 function runMigrations() {

@@ -2025,7 +2025,7 @@ function SessionSummaryRow({ s, techniques, onEdit, onDelete }) {
 }
 function SessionsTab({ data, sessions, setSessions, plans, setPlans, coursesIndex, sprints, editSessionId, setEditSessionId }) {
     const [mode, setMode] = useState("log");
-    const BLANK_PLAN_FORM = { date: todayISO(), content: "", goals: "", plannedMinutes: null, techniques: [], lessonRefs: [] };
+    const BLANK_PLAN_FORM = { date: todayISO(), content: "", goals: "", plannedMinutes: null, techniques: [], lessonRefs: [], blocks: [] };
     const [planForm, setPlanForm] = useState(BLANK_PLAN_FORM);
     // Editing an existing plan (not starting it) is staged, not auto-saved — "Save
     // changes" only shows up once the form actually differs from what was loaded.
@@ -2313,7 +2313,7 @@ function SessionsTab({ data, sessions, setSessions, plans, setPlans, coursesInde
     // Edit an existing planned session without starting it — loads it into the same
     // form used to create one, switching that form into "editing" mode.
     const startEditPlan = (p) => {
-        const formState = { date: p.date, content: p.content, goals: p.goals, plannedMinutes: p.plannedMinutes, techniques: p.techniques, lessonRefs: p.lessonRefs };
+        const formState = { date: p.date, content: p.content, goals: p.goals, plannedMinutes: p.plannedMinutes, techniques: p.techniques, lessonRefs: p.lessonRefs, blocks: p.blocks || [] };
         setPlanForm(formState);
         setOriginalPlanForm(formState);
         setEditingPlanId(p.id);
@@ -2324,17 +2324,42 @@ function SessionsTab({ data, sessions, setSessions, plans, setPlans, coursesInde
         setOriginalPlanForm(null);
         setPlanForm(BLANK_PLAN_FORM);
     };
+    // Planned blocks on a Plan — structured work items (category/material/planned time),
+    // added/removed on the client; "Start session now" turns each into a real block.
+    const [planBlockForm, setPlanBlockForm] = useState(null);
+    const openAddPlanBlock = () => setPlanBlockForm({ category: "Repeat miscellaneous", material: "", techniqueId: "", plannedMinutes: "" });
+    const cancelAddPlanBlock = () => setPlanBlockForm(null);
+    const saveAddPlanBlock = (e) => {
+        e.preventDefault();
+        if (!planBlockForm.material.trim()) return;
+        const block = {
+            id: uid(), category: planBlockForm.category, material: planBlockForm.material.trim(),
+            techniqueId: planBlockForm.techniqueId || null,
+            plannedMinutes: planBlockForm.plannedMinutes === "" ? null : Number(planBlockForm.plannedMinutes),
+        };
+        setPlanForm((f) => ({ ...f, blocks: [...f.blocks, block] }));
+        setPlanBlockForm(null);
+    };
+    const removePlanBlock = (id) => setPlanForm((f) => ({ ...f, blocks: f.blocks.filter((b) => b.id !== id) }));
     const deleteSession = async (id) => { await api.sessions.remove(id); setSessions((s) => s.filter((x) => x.id !== id)); };
     const deletePlan = async (id) => { await api.plans.remove(id); setPlans((p) => p.filter((x) => x.id !== id)); };
     // "Start session now": opens the plan as a live session you can record/time against,
     // logged under today's date (when it's actually practiced), not the plan's target date.
     const startPlanNow = async (p) => {
-        const created = await api.sessions.create({
+        let created = await api.sessions.create({
             date: todayISO(),
             sprintId: sprint ? sprint.id : null,
             notes: `Plan: ${p.goals}${p.content ? " — " + p.content : ""}`,
             plannedMinutes: p.plannedMinutes,
         });
+        // Carry the planned blocks over as real blocks on the live session, each
+        // starting at 0 actual minutes so Planned vs Actual has something to compare.
+        for (const b of p.blocks || []) {
+            created = await api.sessions.addBlock(created.id, {
+                material: b.material, category: b.category, techniqueId: b.techniqueId || null,
+                plannedMinutes: b.plannedMinutes, actualMinutes: 0, completed: false,
+            });
+        }
         setSessions((all) => [created, ...all]);
         setMode("log");
         setDraftSessionId(created.id);
@@ -2541,6 +2566,30 @@ function SessionsTab({ data, sessions, setSessions, plans, setPlans, coursesInde
                 React.createElement("div", null,
                     React.createElement(Label, null, "Content to cover"),
                     React.createElement(TextArea, { rows: 2, value: planForm.content, onChange: (e) => setPlanForm({ ...planForm, content: e.target.value }), placeholder: "Warm-up scales, specific piece, technique drills\u2026" })),
+                E("div", null,
+                    E(Label, null, "Planned blocks"),
+                    planForm.blocks.length > 0 && E("div", { style: { display: "grid", gap: 6, marginBottom: 8 } },
+                        planForm.blocks.map((b) => E("div", {
+                            key: b.id,
+                            style: { display: "flex", justifyContent: "space-between", alignItems: "center", padding: "6px 8px", background: C.bg2, borderRadius: 6 },
+                        },
+                            E("div", { style: { fontSize: 13 } },
+                                E("span", { style: { fontFamily: FONT_MONO, fontSize: 10, color: C.inkFaint, textTransform: "uppercase", marginRight: 8 } }, b.category),
+                                b.material,
+                                b.plannedMinutes != null && E("span", { style: { color: C.inkFaint, marginLeft: 8 } }, fmtMin(b.plannedMinutes))),
+                            E(Btn, { type: "button", variant: "danger", onClick: () => removePlanBlock(b.id), style: { fontSize: 11, padding: "4px 7px" } }, "\u2715")))),
+                    planBlockForm ? E("div", { style: { display: "grid", gap: 8, padding: 10, background: C.bg2, borderRadius: 6 } },
+                        E(Select, { value: planBlockForm.category, onChange: (e) => setPlanBlockForm({ ...planBlockForm, category: e.target.value }) },
+                            BLOCK_CATEGORIES.map((c) => E("option", { key: c, value: c }, c))),
+                        E(Input, { value: planBlockForm.material, onChange: (e) => setPlanBlockForm({ ...planBlockForm, material: e.target.value }), placeholder: "Material" }),
+                        data.techniques.length > 0 && E(Select, { value: planBlockForm.techniqueId, onChange: (e) => setPlanBlockForm({ ...planBlockForm, techniqueId: e.target.value }) },
+                            E("option", { value: "" }, "No technique link"),
+                            data.techniques.map((t) => E("option", { key: t.id, value: t.id }, t.name))),
+                        E(Input, { type: "number", min: "0", value: planBlockForm.plannedMinutes, onChange: (e) => setPlanBlockForm({ ...planBlockForm, plannedMinutes: e.target.value }), placeholder: "Planned min (optional)" }),
+                        E("div", { style: { display: "flex", gap: 8 } },
+                            E(Btn, { type: "button", onClick: saveAddPlanBlock, disabled: !planBlockForm.material.trim() }, "Add block"),
+                            E(Btn, { type: "button", variant: "ghost", onClick: cancelAddPlanBlock }, "Cancel")))
+                        : E(Btn, { type: "button", variant: "ghost", onClick: openAddPlanBlock, style: { fontSize: 13 } }, "+ Add block")),
                 React.createElement("div", null,
                     React.createElement(Label, null, "Planned time"),
                     E(HoursMinutesInput, { value: planForm.plannedMinutes, onChange: (min) => setPlanForm({ ...planForm, plannedMinutes: min }) })),
@@ -2597,7 +2646,9 @@ function SessionsTab({ data, sessions, setSessions, plans, setPlans, coursesInde
                         p.techniques.length > 0 && (React.createElement("div", { style: { fontSize: 11.5, color: C.inkFaint, marginTop: 4 } }, p.techniques.map((id) => { var _a; return (_a = data.techniques.find((t) => t.id === id)) === null || _a === void 0 ? void 0 : _a.name; }).filter(Boolean).join(" · "))),
                         (p.lessonRefs || []).length > 0 && (React.createElement("div", { style: { fontSize: 11.5, color: C.brassDim, marginTop: 2 } },
                             "\uD83D\uDCD6 ",
-                            p.lessonRefs.map((r) => r.label).join(" · ")))),
+                            p.lessonRefs.map((r) => r.label).join(" · "))),
+                        (p.blocks || []).length > 0 && E("div", { style: { fontSize: 11.5, color: C.inkFaint, marginTop: 4 } },
+                            p.blocks.map((b) => `${b.material}${b.plannedMinutes != null ? ` (${fmtMin(b.plannedMinutes)})` : ""}`).join(" · "))),
                     React.createElement("div", { style: { display: "flex", gap: 6, flexShrink: 0 } },
                         React.createElement(Btn, { variant: "ghost", onClick: () => startPlanNow(p), style: { fontSize: 11.5, padding: "6px 9px" } }, "▶ Start session now"),
                         React.createElement(Btn, { variant: "ghost", onClick: () => startEditPlan(p), style: { fontSize: 11.5, padding: "6px 9px" } }, "Edit"),
