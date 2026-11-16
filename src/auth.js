@@ -132,7 +132,7 @@ router.get("/me", requireAuth, (req, res) => {
   const { notifyPrefs, gearReminderDays, name } = rowToUser(user);
   res.json({
     email: user.email, name, notifyPrefs, gearReminderDays,
-    isAdmin: !!user.is_admin, impersonatedBy: req.user.impersonatedBy, lastLoginAt: user.last_login_at,
+    isAdmin: !!user.is_admin, role: user.role, impersonatedBy: req.user.impersonatedBy, lastLoginAt: user.last_login_at,
     mustChangePassword: !!user.must_change_password,
   });
 });

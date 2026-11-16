@@ -1,0 +1,113 @@
+# Fretwork — Release Notes
+
+Versioning scheme used below: **major.significant.minor**
+- **Major** (whole number bump, e.g. 3 → 4): a new subsystem or a foundational architecture change.
+- **Significant** (`.1`, e.g. 4 → 4.1): a real capability added to something that already exists.
+- **Minor** (`.x.1`, e.g. 4.1 → 4.1.1): a small addition or a bug fix.
+
+---
+
+## v1 — SQL backend migration
+*Major*
+
+Rebuilt the storage layer from a single whole-JSON-blob-per-user file to a proper SQLite database with per-resource tables and row-level writes. This was a direct fix for a cross-device data-loss bug: the old architecture overwrote a user's entire data blob on every save, so two devices saving around the same time would silently clobber each other. Verified with a live two-device simulation against production.
+
+## v1.1 — Time-range analytics & Sprint vs Session KPI
+*Significant*
+
+Added a date-range picker to the Dashboard (This Sprint / Previous Sprint / Last Month / custom range, etc.) and a Sprint vs Session time-split chart showing how practice time divides between sprint-linked and ad-hoc work.
+
+## v2 — Start Session page & Sessions Search
+*Major*
+
+New live session workflow: start a session, start/stop timers on individual blocks in real time, with crash-safety proven by killing and reloading mid-timer and confirming the elapsed time survives. Added a separate Sessions Search tab for browsing logged sessions by date range.
+
+## v3 — Tools panel: Tuner, Metronome, Recording
+*Major*
+
+New persistent Tools panel (survives tab navigation) with a quick chromatic tuner, a scheduling-grade metronome (Web Audio lookahead scheduling for drift-free timing, with Plain and Dynamic Duration modes), and audio recording attached to sessions.
+
+## v3.0.1 — Custom-block timer fix
+*Minor*
+
+The live Start/Stop timer only worked on techniques, sprint queue items, and the three freeform activity types. Added a "▶ Start" option for any typed-in custom material, reusing the existing timer logic.
+
+## v4 — Admin dashboard
+*Major*
+
+New owner-only admin dashboard: per-user storage usage, impersonate a user to see what they see (full functional access, time-boxed to 1 hour), send a one-time notice banner for their next login, see last-login times, and reset passwords. Every admin action is written to an audit log.
+
+## v4.0.1 — Second admin account
+*Minor*
+
+Granted admin access to a second account after discovering the first admin button only appears for the account it was originally scoped to by email.
+
+## v4.1 — Delete, edit, and force-password-change for admin
+*Significant*
+
+Added three admin capabilities: permanently delete a user (and every row that depends on them, including recording files on disk), edit a user's email, and force a password change on next login (a mandatory "set a new password" screen, no need to know their current one).
+
+## v4.2 — Email sending enabled
+*Significant*
+
+Configured real SMTP delivery through Gmail. Previously every verification/reset/notification email was just logged to the console instead of sent. This also switches new registrations from auto-verified to requiring an email click, now that verification mail can actually be delivered.
+
+## v5 — Topics & Questions + email contacts
+*Major*
+
+Renamed the Topics tab to Topics & Questions and added the ability to select items and email them — to yourself or to a saved contact — with a dedicated "manage email contacts" screen.
+
+## v5.0.1 — Personalized subject line and note field
+*Minor*
+
+Emailed topics now use the subject "A new Guitar Question from {name} ({email})" instead of a generic subject, and a free-text note can be appended to the email. Added an optional display name to the account settings to support this.
+
+## v6 — Session recording overhaul
+*Major*
+
+Ad-hoc session flag (hides the Planned vs Actual comparison when there's no plan to compare against), a table-friendly notes editor, per-block and whole-session audio recording with an auto-generated Date-Time-Sprint-Topic-note name, a new dedicated Recordings tab searchable by date/name/sprint, and download links everywhere a recording appears.
+
+## v6.0.1 — Tuner twitchiness fix
+*Minor*
+
+Slowed the pitch-detection poll rate and added a median-of-3 filter so a single noisy reading no longer yanks the tuner needle.
+
+## v6.0.2 — Utilities menu fix
+*Minor*
+
+The Utilities dropdown closed before the mouse reached it, because it was positioned outside its parent's hoverable layout box. Added a short cancelable close-delay.
+
+## v6.1 — Planned/Actual time fields, sprint-link checkbox, editable dates
+*Significant*
+
+Added session-level Planned Time and Actual Time fields (entered as Hours + Minutes) independent of per-block tracking, a checkbox/picker to link a session to the current sprint, and made the session date directly editable instead of fixed at creation.
+
+## v7 — Courses/Sprints/Sessions unification, phase 1
+*Major*
+
+Each course now runs its own configurable sprint cadence (days/weeks/months/years), and multiple sprints can be active concurrently — one per course, each on its own clock — replacing the old single-global-sprint model. Closed a related gap where more than one sprint could silently end up "active" at once.
+
+## v8 — Technique tagging & multi-course lessons, phases 2+3
+*Major*
+
+Techniques can now be tagged on a Course, Sprint, Session, or Lesson, with tagging a Course/Sprint cascading the tag down to everything underneath it. Lessons can now belong to more than one course, and a new course can be spun up directly from an existing lesson. Also fixed a bug introduced in v7 where deleting a course with sprint history would fail outright.
+
+## v8.0.1 — YouTube links in Course Material
+*Minor*
+
+Lessons can now be a pasted YouTube link instead of an uploaded file, with a choice to play it embedded or open it directly on YouTube.
+
+## v8.0.2 — Edit planned sessions without starting them
+*Minor*
+
+Added an Edit button on planned sessions that loads the plan into the existing form without starting it, with a "Save changes" button that only appears once something's actually been changed.
+
+## v8.1 — Planned blocks on a plan
+*Significant*
+
+Planned sessions can now include structured work-item blocks (category, material, planned time), which carry over as real session blocks when "Start session now" turns the plan into a live session.
+
+## v9 — Role-based test accounts
+*Major*
+
+New account roles (admin / test_admin / test_instructor / test_user / user) with a scoping rule enforced on every admin action: a test_admin can only manage test_instructor/test_user accounts — never real admins, other test_admins, or real production users. Provisioned 9 test accounts (3 of each test role) to exercise this.

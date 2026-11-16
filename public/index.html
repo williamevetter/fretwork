@@ -1516,7 +1516,7 @@ function App({ me }) {
             tab === "tuner" && E(GuitarTunerTab, null),
             tab === "chords" && E(ChordGeneratorTab, null),
             tab === "cadence" && E(CadenceBuilderTab, null),
-            tab === "admin" && me && me.isAdmin && E(AdminDashboardTab, null)),
+            tab === "admin" && me && me.isAdmin && E(AdminDashboardTab, { me: me })),
         pendingNotice && E("div", {
             style: { position: "fixed", inset: 0, background: "rgba(0,0,0,0.6)", display: "flex", alignItems: "center", justifyContent: "center", zIndex: 2000 },
         },
@@ -1538,7 +1538,16 @@ function fmtBytes(n) {
     while (v >= 1024 && i < units.length - 1) { v /= 1024; i++; }
     return `${v.toFixed(v < 10 && i > 0 ? 1 : 0)} ${units[i]}`;
 }
-function AdminDashboardTab() {
+function roleLabel(role) {
+    if (!role || role === "user")
+        return "User";
+    return role.replace(/_/g, " ").replace(/\b\w/g, (c) => c.toUpperCase());
+}
+function AdminDashboardTab({ me }) {
+    const isTestAdmin = me.role === "test_admin";
+    // Real admins: unrestricted, as before. A test_admin sees every account (for
+    // visibility) but the action buttons only appear for test_instructor/test_user rows.
+    const canAct = (u) => !u.isAdmin && (!isTestAdmin || u.role === "test_instructor" || u.role === "test_user");
     const [users, setUsers] = useState(null);
     const [error, setError] = useState("");
     const [noticeDrafts, setNoticeDrafts] = useState({});
@@ -1602,7 +1611,7 @@ function AdminDashboardTab() {
             E("table", { style: { width: "100%", borderCollapse: "collapse", fontSize: 12.5 } },
                 E("thead", null,
                     E("tr", { style: { textAlign: "left", color: C.inkFaint, fontFamily: FONT_MONO, fontSize: 10.5, letterSpacing: "0.03em" } },
-                        ["EMAIL", "VERIFIED", "CREATED", "LAST LOGIN", "STORAGE", "ACTIVITY", "ACTIONS"].map((h) => (
+                        ["EMAIL", "ROLE", "VERIFIED", "CREATED", "LAST LOGIN", "STORAGE", "ACTIVITY", "ACTIONS"].map((h) => (
                             E("th", { key: h, style: { padding: "6px 10px", borderBottom: `1px solid ${C.line}` } }, h))))),
                 E("tbody", null, users.map((u) => (
                     E("tr", { key: u.id, style: { borderBottom: `1px solid ${C.line}` } },
@@ -1613,6 +1622,7 @@ function AdminDashboardTab() {
                                 E("button", { onClick: cancelEdit, style: { background: "transparent", border: `1px solid ${C.line}`, color: C.inkFaint, borderRadius: 5, padding: "3px 8px", cursor: "pointer", fontSize: 11 } }, "Cancel")) :
                                 E("span", null, u.email, u.isAdmin && E("span", { style: { marginLeft: 6, fontSize: 10, color: C.brass, fontFamily: FONT_MONO } }, "ADMIN"),
                                     u.mustChangePassword && E("span", { style: { marginLeft: 6, fontSize: 10, color: C.rust, fontFamily: FONT_MONO } }, "MUST CHANGE PW"))),
+                        E("td", { style: { padding: "8px 10px", fontFamily: FONT_MONO, fontSize: 11, color: (u.role || "").startsWith("test_") ? C.string : C.inkDim } }, roleLabel(u.role)),
                         E("td", { style: { padding: "8px 10px", color: u.verified ? C.sage : C.inkFaint } }, u.verified ? "yes" : "no"),
                         E("td", { style: { padding: "8px 10px", color: C.inkFaint, fontFamily: FONT_MONO, fontSize: 11 } }, (u.createdAt || "").slice(0, 10)),
                         E("td", { style: { padding: "8px 10px", color: C.inkFaint, fontFamily: FONT_MONO, fontSize: 11 } }, u.lastLoginAt ? u.lastLoginAt.slice(0, 16).replace("T", " ") : "never"),
@@ -1621,7 +1631,7 @@ function AdminDashboardTab() {
                         E("td", { style: { padding: "8px 10px", color: C.inkFaint, fontFamily: FONT_MONO, fontSize: 11 } },
                             u.sessionCount, " sessions / ", u.sprintCount, " sprints"),
                         E("td", { style: { padding: "8px 10px", minWidth: 240 } },
-                            u.isAdmin ? E("span", { style: { color: C.inkFaint, fontSize: 11.5 } }, "—") : E("div", { style: { display: "flex", flexDirection: "column", gap: 6 } },
+                            !canAct(u) ? E("span", { style: { color: C.inkFaint, fontSize: 11.5 } }, u.isAdmin ? "—" : "out of scope") : E("div", { style: { display: "flex", flexDirection: "column", gap: 6 } },
                                 E("div", { style: { display: "flex", gap: 6, flexWrap: "wrap" } },
                                     E("button", { onClick: () => impersonate(u), style: { background: "transparent", border: `1px solid ${C.brass}66`, color: C.brass, borderRadius: 5, padding: "3px 8px", cursor: "pointer", fontSize: 11 } }, "Impersonate"),
                                     E("button", { onClick: () => startEdit(u), style: { background: "transparent", border: `1px solid ${C.line}`, color: C.inkDim, borderRadius: 5, padding: "3px 8px", cursor: "pointer", fontSize: 11 } }, "Edit"),

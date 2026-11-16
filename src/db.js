@@ -316,6 +316,15 @@ const MIGRATIONS = [
   `
   ALTER TABLE plans ADD COLUMN blocks_json TEXT;
   `,
+  // Role-based admin scoping: 'admin' (real, full power — the two existing accounts),
+  // 'test_admin' / 'test_instructor' / 'test_user' (QA personas), default 'user' for
+  // everyone else. is_admin stays the dashboard-access gate (unchanged); role is the
+  // finer-grained check layered on top, inside the admin routes, for WHO a test_admin
+  // is allowed to act on.
+  `
+  ALTER TABLE users ADD COLUMN role TEXT NOT NULL DEFAULT 'user';
+  UPDATE users SET role = 'admin' WHERE is_admin = 1;
+  `,
 ];
 
 function runMigrations() {
