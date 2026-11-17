@@ -345,6 +345,28 @@ No use of this site to perform any activities against your local or federal law,
 No racist, sexist, or religious slurs — ZERO TOLERANCE.', '${new Date().toISOString()}');
   ALTER TABLE users ADD COLUMN accepted_statement_version INTEGER NOT NULL DEFAULT 0;
   `,
+  // Course lifecycle: a course can now be marked completed (with a short checkup
+  // questionnaire), reopened, or "continued" into a linked Part 2 course.
+  // focus_days_json is a flat JSON array of weekday codes (e.g. '["mon","wed"]"),
+  // same precedent as plans.blocks_json — frontend-owned, never queried/joined.
+  // course_checkups is a real child table (not a JSON blob on courses) since a
+  // course can be ended more than once (end -> reopen -> end again), each producing
+  // its own row with its own id/timestamp — same shape as lessons/sprints.
+  `
+  ALTER TABLE courses ADD COLUMN status TEXT NOT NULL DEFAULT 'active';
+  ALTER TABLE courses ADD COLUMN completed_at TEXT;
+  ALTER TABLE courses ADD COLUMN previous_course_id TEXT REFERENCES courses(id);
+  ALTER TABLE courses ADD COLUMN focus_days_json TEXT;
+
+  CREATE TABLE course_checkups (
+    id TEXT PRIMARY KEY,
+    user_id TEXT NOT NULL REFERENCES users(id),
+    course_id TEXT NOT NULL REFERENCES courses(id),
+    answers_json TEXT NOT NULL,
+    created_at TEXT NOT NULL
+  );
+  CREATE INDEX idx_course_checkups_course ON course_checkups(course_id);
+  `,
 ];
 
 function runMigrations() {

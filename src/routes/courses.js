@@ -13,13 +13,24 @@ function lessonFull(row) {
   return { ...lessonMeta(row), html: row.html, text: row.text, dataUrl: row.data_url };
 }
 const SPRINT_LENGTH_UNITS = ["day", "week", "month", "year"];
+const WEEKDAY_CODES = ["mon", "tue", "wed", "thu", "fri", "sat", "sun"];
 function courseEntry(row, lessonRows) {
   return {
     id: row.id, name: row.name, description: row.description || "",
     sprintLengthValue: row.sprint_length_value, sprintLengthUnit: row.sprint_length_unit,
+    status: row.status || "active", completedAt: row.completed_at || null, previousCourseId: row.previous_course_id || null,
+    focusDays: row.focus_days_json ? JSON.parse(row.focus_days_json) : [],
     lessons: lessonRows.map(lessonMeta),
   };
 }
+// Fixed questions, written here (not client-supplied) so they can't be spoofed —
+// answers are a flat [{question, answer}] array, same precedent as plans.blocks_json.
+const CHECKUP_QUESTIONS = [
+  "How would you rate your progress in this course?",
+  "What went well?",
+  "What would you focus on next time?",
+  "Any additional notes?",
+];
 
 // A lesson's primary course is lessons.course_id (unchanged); lesson_courses holds
 // only the extra associations, so a course's lesson list is the union of both.
@@ -66,9 +77,12 @@ router.patch("/:id", (req, res) => {
   const sprint_length_unit = req.body?.sprintLengthUnit !== undefined
     ? (SPRINT_LENGTH_UNITS.includes(req.body.sprintLengthUnit) ? req.body.sprintLengthUnit : row.sprint_length_unit)
     : row.sprint_length_unit;
-  db.prepare("UPDATE courses SET name = ?, description = ?, sprint_length_value = ?, sprint_length_unit = ? WHERE id = ?")
-    .run(name, description, sprint_length_value, sprint_length_unit, row.id);
-  res.json(courseEntry({ ...row, name, description, sprint_length_value, sprint_length_unit }, lessonsStmt.all(row.id)));
+  const focus_days_json = req.body?.focusDays !== undefined
+    ? JSON.stringify((req.body.focusDays || []).filter((d) => WEEKDAY_CODES.includes(d)))
+    : row.focus_days_json;
+  db.prepare("UPDATE courses SET name = ?, description = ?, sprint_length_value = ?, sprint_length_unit = ?, focus_days_json = ? WHERE id = ?")
+    .run(name, description, sprint_length_value, sprint_length_unit, focus_days_json, row.id);
+  res.json(courseEntry({ ...row, name, description, sprint_length_value, sprint_length_unit, focus_days_json }, lessonsForCourseStmt.all(row.id, row.id)));
 });
 
 router.delete("/:id", (req, res) => {
@@ -99,6 +113,11 @@ router.delete("/:id", (req, res) => {
     // sessions) no longer have a source — drop them along with the course's own tag.
     db.prepare("DELETE FROM technique_assignments WHERE inherited_from = ?").run(`course:${course.id}`);
     db.prepare("DELETE FROM technique_assignments WHERE scope_type = 'course' AND scope_id = ?").run(course.id);
+    // course_checkups.course_id and courses.previous_course_id both REFERENCE
+    // courses(id) with no ON DELETE — same FK-ordering requirement as everywhere
+    // else in this schema: clear/detach before the course row itself goes.
+    db.prepare("DELETE FROM course_checkups WHERE course_id = ?").run(course.id);
+    db.prepare("UPDATE courses SET previous_course_id = NULL WHERE previous_course_id = ?").run(course.id);
     db.prepare("DELETE FROM courses WHERE id = ?").run(course.id);
     db.exec("COMMIT");
   } catch (e) {
@@ -198,6 +217,63 @@ router.post("/from-lesson", (req, res) => {
     throw e;
   }
   res.json(courseEntry(row, lessonsForCourseStmt.all(row.id, row.id)));
+});
+
+// Ends a course: records a short checkup (fixed questions, free-text answers) and
+// marks the course completed. Doesn't touch sprints/lessons — a completed course
+// stays fully readable, nothing cascades.
+router.post("/:id/end", (req, res) => {
+  const course = db.prepare("SELECT * FROM courses WHERE id = ? AND user_id = ?").get(req.params.id, req.user.id);
+  if (!course) return res.status(404).json({ error: "Not found." });
+  const rawAnswers = Array.isArray(req.body?.answers) ? req.body.answers : [];
+  const answers = CHECKUP_QUESTIONS.map((question, i) => ({
+    question, answer: String((rawAnswers[i] && rawAnswers[i].answer) || "").trim(),
+  }));
+  const completedAt = nowISO();
+  db.exec("BEGIN");
+  try {
+    db.prepare("UPDATE courses SET status = 'completed', completed_at = ? WHERE id = ?").run(completedAt, course.id);
+    db.prepare("INSERT INTO course_checkups (id, user_id, course_id, answers_json, created_at) VALUES (?, ?, ?, ?, ?)")
+      .run(uid(), req.user.id, course.id, JSON.stringify(answers), completedAt);
+    db.exec("COMMIT");
+  } catch (e) {
+    db.exec("ROLLBACK");
+    throw e;
+  }
+  res.json(courseEntry({ ...course, status: "completed", completed_at: completedAt }, lessonsForCourseStmt.all(course.id, course.id)));
+});
+
+// "Extend" — reopens the same course. No new checkup; status just flips back.
+router.post("/:id/reopen", (req, res) => {
+  const course = db.prepare("SELECT * FROM courses WHERE id = ? AND user_id = ?").get(req.params.id, req.user.id);
+  if (!course) return res.status(404).json({ error: "Not found." });
+  db.prepare("UPDATE courses SET status = 'active', completed_at = NULL WHERE id = ?").run(course.id);
+  res.json(courseEntry({ ...course, status: "active", completed_at: null }, lessonsForCourseStmt.all(course.id, course.id)));
+});
+
+// "Part 2" — spins up a new course linked to this one, copying cadence/focus days.
+// Mirrors POST /from-lesson's shape (create + link in one step).
+router.post("/:id/continue", (req, res) => {
+  const course = db.prepare("SELECT * FROM courses WHERE id = ? AND user_id = ?").get(req.params.id, req.user.id);
+  if (!course) return res.status(404).json({ error: "Not found." });
+  const name = (req.body?.name || "").trim() || `${course.name} — Part 2`;
+  const row = {
+    id: uid(), name, description: "",
+    sprint_length_value: course.sprint_length_value, sprint_length_unit: course.sprint_length_unit,
+    previous_course_id: course.id, focus_days_json: course.focus_days_json,
+  };
+  db.prepare(`
+    INSERT INTO courses (id, user_id, name, description, sprint_length_value, sprint_length_unit, previous_course_id, focus_days_json)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+  `).run(row.id, req.user.id, row.name, row.description, row.sprint_length_value, row.sprint_length_unit, row.previous_course_id, row.focus_days_json);
+  res.json(courseEntry(row, []));
+});
+
+router.get("/:id/checkups", (req, res) => {
+  const course = db.prepare("SELECT id FROM courses WHERE id = ? AND user_id = ?").get(req.params.id, req.user.id);
+  if (!course) return res.status(404).json({ error: "Not found." });
+  const rows = db.prepare("SELECT * FROM course_checkups WHERE course_id = ? ORDER BY created_at DESC").all(course.id);
+  res.json(rows.map((r) => ({ id: r.id, answers: JSON.parse(r.answers_json), createdAt: r.created_at })));
 });
 
 module.exports = router;

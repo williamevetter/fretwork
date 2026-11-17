@@ -135,6 +135,10 @@ const api = {
     linkLessonToCourse: (lessonId, courseId) => apiCall("POST", `/courses/lessons/${lessonId}/courses`, { courseId }),
     unlinkLessonFromCourse: (lessonId, courseId) => apiCall("DELETE", `/courses/lessons/${lessonId}/courses/${courseId}`),
     createFromLesson: (body) => apiCall("POST", "/courses/from-lesson", body),
+    end: (id, answers) => apiCall("POST", `/courses/${id}/end`, { answers }),
+    reopen: (id) => apiCall("POST", `/courses/${id}/reopen`),
+    continueCourse: (id, name) => apiCall("POST", `/courses/${id}/continue`, { name }),
+    checkups: (id) => apiCall("GET", `/courses/${id}/checkups`),
   },
   notes: {
     list: () => apiCall("GET", "/notes"),
@@ -733,6 +737,44 @@ function fmtDate(iso) {
 function nowISOFull() {
     return new Date().toISOString();
 }
+// Local-date-parts formatting (not toISOString, which converts to UTC and can
+// shift the day) — matches the plain "YYYY-MM-DD" string convention used
+// everywhere else (session dates, sprint start/end dates).
+function ymd(y, m, d) {
+    const dt = new Date(y, m, d);
+    return `${dt.getFullYear()}-${String(dt.getMonth() + 1).padStart(2, "0")}-${String(dt.getDate()).padStart(2, "0")}`;
+}
+// Computed client-side — fixed dates plus the floating Monday/Thursday holidays
+// via plain date math, no external library/API.
+function usFederalHolidays(year) {
+    const nthWeekday = (month, weekday, n) => {
+        const d = new Date(year, month, 1);
+        let count = 0;
+        while (true) {
+            if (d.getDay() === weekday) { count++; if (count === n) break; }
+            d.setDate(d.getDate() + 1);
+        }
+        return ymd(d.getFullYear(), d.getMonth(), d.getDate());
+    };
+    const lastWeekday = (month, weekday) => {
+        const d = new Date(year, month + 1, 0);
+        while (d.getDay() !== weekday) d.setDate(d.getDate() - 1);
+        return ymd(d.getFullYear(), d.getMonth(), d.getDate());
+    };
+    const map = {};
+    map[ymd(year, 0, 1)] = "New Year's Day";
+    map[nthWeekday(0, 1, 3)] = "Martin Luther King Jr. Day";
+    map[nthWeekday(1, 1, 3)] = "Presidents' Day";
+    map[lastWeekday(4, 1)] = "Memorial Day";
+    map[ymd(year, 5, 19)] = "Juneteenth";
+    map[ymd(year, 6, 4)] = "Independence Day";
+    map[nthWeekday(8, 1, 1)] = "Labor Day";
+    map[nthWeekday(9, 1, 2)] = "Columbus Day";
+    map[ymd(year, 10, 11)] = "Veterans Day";
+    map[nthWeekday(10, 4, 4)] = "Thanksgiving";
+    map[ymd(year, 11, 25)] = "Christmas Day";
+    return map;
+}
 // Live-timer display only (MM:SS or H:MM:SS) — unrelated to fmtMin, which formats
 // stored/rounded minutes for everything else.
 function fmtElapsed(totalSeconds) {
@@ -952,6 +994,7 @@ const TABS = [
     { id: "search", label: "Search Sessions" },
     { id: "recordings", label: "Recordings" },
     { id: "sprints", label: "Sprints" },
+    { id: "calendar", label: "Calendar" },
     { id: "techniques", label: "Techniques" },
     { id: "topics", label: "Topics & Questions" },
     { id: "courses", label: "Course Material" },
@@ -1509,6 +1552,7 @@ function App({ me }) {
             tab === "search" && E(SessionsSearchTab, { sessions: sessions, techniques: techniques, sprints: sprints, onEditSession: (id) => { setEditSessionId(id); setTab("sessions"); } }),
             tab === "recordings" && E(RecordingsTab, { sessions: sessions, setSessions: setSessions, sprints: sprints }),
             tab === "sprints" && E(SprintsTab, { sessions: sessions, setSessions: setSessions, sprints: sprints, setSprints: setSprints, coursesIndex: coursesIndex, setTab: setTab, techniques: techniques }),
+            tab === "calendar" && E(CalendarTab, { sessions: sessions, sprints: sprints, coursesIndex: coursesIndex, onEditSession: (id) => { setEditSessionId(id); setTab("sessions"); } }),
             tab === "techniques" && React.createElement(TechniquesTab, { sessions: sessions, techniques: techniques, setTechniques: setTechniques }),
             tab === "topics" && React.createElement(TopicsTab, { topics: topics, setTopics: setTopics, me: me }),
             tab === "courses" && (React.createElement(CourseMaterialTab, { coursesIndex: coursesIndex, setCoursesIndex: setCoursesIndex, notes: notes, setNotes: setNotes, techniques: techniques })),
@@ -2088,6 +2132,11 @@ function SessionsTab({ data, sessions, setSessions, plans, setPlans, coursesInde
     // response straight into `sessions`, so `draft` always reflects exactly what's
     // persisted. There's no separate unsaved/local copy that a crash could lose.
     const [draftSessionId, setDraftSessionId] = useState(null);
+    // "Start blank" no longer POSTs immediately — it stages a local-only pending draft
+    // (sentinel id "pending") until the first real touch: a timer starts, a block is
+    // saved, a recording finishes, or the user hits the explicit "Save session" button.
+    const [pendingDraftData, setPendingDraftData] = useState(null);
+    const isPending = draftSessionId === "pending";
     // Picks up an "Edit this session" handoff from SessionsSearchTab.
     useEffect(() => {
         if (!editSessionId) return;
@@ -2106,28 +2155,40 @@ function SessionsTab({ data, sessions, setSessions, plans, setPlans, coursesInde
     const [recordNoteDrafts, setRecordNoteDrafts] = useState({}); // keyed by blockId, or "session" for the whole-session recorder
     const [recordingTarget, setRecordingTarget] = useState(null); // { blockId, topic } while a recording is in progress
 
-    const draft = sessions.find((s) => s.id === draftSessionId) || null;
+    const draft = isPending
+        ? { id: "pending", blocks: [], recordings: [], date: todayISO(), sprintId: null, isAdHoc: false, notes: "", plannedMinutes: null, actualMinutesManual: null, ...pendingDraftData }
+        : (sessions.find((s) => s.id === draftSessionId) || null);
     const runningBlock = draft && (draft.blocks || []).find((b) => b.timerStartedAt);
     const mergeSession = (updated) => setSessions((all) => all.map((s) => (s.id === updated.id ? updated : s)));
 
     useEffect(() => { setNotesDraft((draft && draft.notes) || ""); }, [draft && draft.id]);
     const saveNotes = async () => {
         if (!draft || notesDraft === draft.notes) return;
+        if (isPending) { setPendingDraftData((d) => ({ ...d, notes: notesDraft })); return; }
         mergeSession(await api.sessions.patch(draft.id, { notes: notesDraft }));
     };
     const toggleAdHoc = async (checked) => {
         if (!draft) { setAdHocChecked(checked); return; }
+        if (isPending) { setPendingDraftData((d) => ({ ...d, isAdHoc: checked })); return; }
         mergeSession(await api.sessions.patch(draft.id, { isAdHoc: checked }));
     };
     const linkDraftToSprint = async (sprintId) => {
+        if (isPending) { setPendingDraftData((d) => ({ ...d, sprintId })); return; }
         mergeSession(await api.sessions.patch(draft.id, { sprintId }));
     };
     const setDraftDate = async (newDate) => {
         if (!newDate) return;
+        if (isPending) { setPendingDraftData((d) => ({ ...d, date: newDate })); return; }
         mergeSession(await api.sessions.patch(draft.id, { date: newDate }));
     };
-    const setDraftPlannedMinutes = async (min) => mergeSession(await api.sessions.patch(draft.id, { plannedMinutes: min }));
-    const setDraftActualMinutes = async (min) => mergeSession(await api.sessions.patch(draft.id, { actualMinutesManual: min }));
+    const setDraftPlannedMinutes = async (min) => {
+        if (isPending) { setPendingDraftData((d) => ({ ...d, plannedMinutes: min })); return; }
+        mergeSession(await api.sessions.patch(draft.id, { plannedMinutes: min }));
+    };
+    const setDraftActualMinutes = async (min) => {
+        if (isPending) { setPendingDraftData((d) => ({ ...d, actualMinutesManual: min })); return; }
+        mergeSession(await api.sessions.patch(draft.id, { actualMinutesManual: min }));
+    };
 
     // Resume a timer left running across a reload/crash — only takes over when nothing
     // is already open, so it never fights a user who's deliberately looking at something else.
@@ -2180,10 +2241,14 @@ function SessionsTab({ data, sessions, setSessions, plans, setPlans, coursesInde
     }, [sprint, data.techniques]);
 
     const ensureDraftSession = async () => {
-        if (draft) return draft.id;
-        const created = await api.sessions.create({ date: todayISO(), sprintId: sprint ? sprint.id : null, isAdHoc: adHocChecked });
+        if (draft && !isPending) return draft.id;
+        const payload = isPending
+            ? { date: pendingDraftData?.date || todayISO(), sprintId: pendingDraftData?.sprintId ?? null, isAdHoc: pendingDraftData?.isAdHoc || false, notes: pendingDraftData?.notes || "", plannedMinutes: pendingDraftData?.plannedMinutes, actualMinutesManual: pendingDraftData?.actualMinutesManual }
+            : { date: todayISO(), sprintId: sprint ? sprint.id : null, isAdHoc: adHocChecked };
+        const created = await api.sessions.create(payload);
         setSessions((all) => [created, ...all]);
         setDraftSessionId(created.id);
+        setPendingDraftData(null);
         return created.id;
     };
     const stopTimer = async (block) => {
@@ -2210,7 +2275,12 @@ function SessionsTab({ data, sessions, setSessions, plans, setPlans, coursesInde
         queueItemId: item.id, material: item.title, category: item.category, techniqueId: null,
         actualMinutes: plannedMinutes, plannedMinutes, completed: false, important: item.important, ref: item.ref || null, notes: "",
     });
-    const startBlankDraft = () => ensureDraftSession();
+    // No server round-trip here — stages a local-only pending draft, created for real
+    // only once a timer/block/recording/"Save session" touches it (see ensureDraftSession).
+    const startBlankDraft = () => {
+        setPendingDraftData({ date: todayISO(), sprintId: sprint ? sprint.id : null, isAdHoc: adHocChecked, notes: "", plannedMinutes: null, actualMinutesManual: null });
+        setDraftSessionId("pending");
+    };
     const startAllocatedDraft = async () => {
         setBusy(true);
         try {
@@ -2232,8 +2302,10 @@ function SessionsTab({ data, sessions, setSessions, plans, setPlans, coursesInde
             }
         } finally { setBusy(false); }
     };
-    const reopenSession = (session) => { setMode("log"); setDraftSessionId(session.id); };
-    const closeDraft = () => { setDraftSessionId(null); setBlockForm(null); };
+    const reopenSession = (session) => { setMode("log"); setPendingDraftData(null); setDraftSessionId(session.id); };
+    // Closing a still-pending draft (nothing has touched it) just discards the local
+    // staged data — no row was ever created, so no DELETE call is needed either.
+    const closeDraft = () => { setDraftSessionId(null); setPendingDraftData(null); setBlockForm(null); };
 
     const openNewBlockForm = (prefillTitle, prefillCategory) => setBlockForm({
         editingId: null, category: prefillCategory || "Repeat miscellaneous", material: prefillTitle || "",
@@ -2595,6 +2667,7 @@ function SessionsTab({ data, sessions, setSessions, plans, setPlans, coursesInde
                             style: { fontSize: 12, padding: "6px 11px", borderRadius: 20, border: `1px solid ${C.line}`, background: "transparent", color: C.inkFaint, cursor: "pointer" },
                         }, "\u21BB ", b.material)))),
             draft && E("div", { style: { display: "flex", gap: 8 } },
+                isPending && E(Btn, { onClick: ensureDraftSession }, "Save session"),
                 E(Btn, { variant: "ghost", onClick: closeDraft, disabled: !!runningBlock }, "Done for now"))),
         mode === "plan" && (React.createElement(Card, null,
             React.createElement("form", { onSubmit: submitPlan, style: { display: "grid", gap: 12 } },
@@ -3095,6 +3168,100 @@ function SprintsTab({ sessions, setSessions, sprints, setSprints, coursesIndex, 
                     E("span", { style: { fontFamily: FONT_MONO, color: C.brass, fontSize: 11 } }, fmtDate(s.startDate), " – ", fmtDate(s.endDate)),
                     " · ", s.queue.filter((q) => q.completed).length, "/", s.queue.length, " complete"),
                 E(Btn, { variant: "ghost", onClick: () => showRecap(s), style: { fontSize: 11, padding: "4px 8px" } }, "Recap")))));
+}
+/* ---------------------------------------------------------
+   CALENDAR TAB — month grid + day drill-down. Sessions/sprints/courses are
+   already loaded app-wide, no new fetch. Week/Year views deliberately left out
+   of this pass (same grid at a different zoom, low marginal value here).
+--------------------------------------------------------- */
+const JS_DAY_TO_WEEKDAY_CODE = ["sun", "mon", "tue", "wed", "thu", "fri", "sat"];
+function CalendarTab({ sessions, sprints, coursesIndex, onEditSession }) {
+    const today = new Date();
+    const [viewYear, setViewYear] = useState(today.getFullYear());
+    const [viewMonth, setViewMonth] = useState(today.getMonth());
+    const [selectedDay, setSelectedDay] = useState(null);
+    const holidays = useMemo(() => usFederalHolidays(viewYear), [viewYear]);
+    const courseById = useMemo(() => { const m = new Map(); coursesIndex.forEach((c) => m.set(c.id, c)); return m; }, [coursesIndex]);
+    const sessionsByDate = useMemo(() => {
+        const m = new Map();
+        sessions.forEach((s) => { if (!m.has(s.date)) m.set(s.date, []); m.get(s.date).push(s); });
+        return m;
+    }, [sessions]);
+    const focusCourses = useMemo(() => coursesIndex.filter((c) => c.status === "active" && (c.focusDays || []).length > 0), [coursesIndex]);
+    const todayStr = todayISO();
+    const monthLabel = new Date(viewYear, viewMonth, 1).toLocaleDateString(undefined, { month: "long", year: "numeric" });
+    const startOffset = new Date(viewYear, viewMonth, 1).getDay();
+    const daysInMonth = new Date(viewYear, viewMonth + 1, 0).getDate();
+    const cells = [];
+    for (let i = 0; i < startOffset; i++) cells.push(null);
+    for (let d = 1; d <= daysInMonth; d++) cells.push(d);
+    while (cells.length % 7 !== 0) cells.push(null);
+    const prevMonth = () => { if (viewMonth === 0) { setViewYear(viewYear - 1); setViewMonth(11); } else setViewMonth(viewMonth - 1); };
+    const nextMonth = () => { if (viewMonth === 11) { setViewYear(viewYear + 1); setViewMonth(0); } else setViewMonth(viewMonth + 1); };
+    const goToday = () => { setViewYear(today.getFullYear()); setViewMonth(today.getMonth()); setSelectedDay(todayStr); };
+    const dayInfo = (dateStr) => {
+        const weekdayCode = JS_DAY_TO_WEEKDAY_CODE[new Date(dateStr + "T00:00:00").getDay()];
+        const daySessions = sessionsByDate.get(dateStr) || [];
+        return {
+            daySessions,
+            sprintsOnDay: sprints.filter((sp) => sp.startDate <= dateStr && dateStr <= sp.endDate),
+            focusOnDay: focusCourses.filter((c) => (c.focusDays || []).includes(weekdayCode)),
+            hasRecording: daySessions.some((s) => (s.recordings || []).length > 0),
+            holiday: holidays[dateStr],
+        };
+    };
+    return E("div", { style: { display: "grid", gap: 14 } },
+        E(Card, null,
+            E("div", { style: { display: "flex", justifyContent: "space-between", alignItems: "center" } },
+                E("div", { style: { display: "flex", gap: 8 } },
+                    E(Btn, { variant: "ghost", onClick: prevMonth }, "←"),
+                    E(Btn, { variant: "ghost", onClick: goToday }, "Today"),
+                    E(Btn, { variant: "ghost", onClick: nextMonth }, "→")),
+                E("div", { style: { fontFamily: FONT_DISPLAY, fontSize: 17, fontWeight: 600 } }, monthLabel)),
+            E("div", { style: { display: "grid", gridTemplateColumns: "repeat(7, 1fr)", gap: 4, marginTop: 12 } },
+                ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"].map((d) => E("div", { key: d, style: { fontFamily: FONT_MONO, fontSize: 10.5, color: C.inkFaint, textAlign: "center", padding: "4px 0" } }, d)),
+                cells.map((d, i) => {
+                    if (d === null) return E("div", { key: i });
+                    const dateStr = ymd(viewYear, viewMonth, d);
+                    const info = dayInfo(dateStr);
+                    const isToday = dateStr === todayStr;
+                    const isSelected = dateStr === selectedDay;
+                    return E("div", {
+                        key: i, onClick: () => setSelectedDay(dateStr),
+                        style: {
+                            minHeight: 58, borderRadius: 6, padding: 5, cursor: "pointer",
+                            border: `1px solid ${isSelected ? C.brass : C.line}`,
+                            background: isToday ? `${C.brass}22` : (info.sprintsOnDay.length ? `${C.string}1A` : C.bg2),
+                        },
+                    },
+                        E("div", { style: { fontFamily: FONT_MONO, fontSize: 11, color: isToday ? C.brass : C.inkDim } }, d),
+                        info.holiday && E("div", { style: { fontSize: 8.5, color: C.rust, marginTop: 2, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" } }, info.holiday),
+                        info.focusOnDay.length > 0 && E("div", { style: { fontSize: 9, color: C.sage, marginTop: 1 } }, "● focus"),
+                        info.daySessions.length > 0 && E("div", { style: { display: "flex", gap: 3, marginTop: 3, alignItems: "center" } },
+                            E("span", { style: { width: 6, height: 6, borderRadius: "50%", background: C.brass, display: "inline-block" } }),
+                            E("span", { style: { fontSize: 9.5, color: C.inkFaint } }, info.daySessions.length)),
+                        info.hasRecording && E("div", { style: { fontSize: 9.5, marginTop: 1 } }, "▶"));
+                }))),
+        selectedDay && (() => {
+            const info = dayInfo(selectedDay);
+            return E(Card, null,
+                E("div", { style: { fontFamily: FONT_DISPLAY, fontSize: 15, fontWeight: 600, marginBottom: 8 } }, fmtDate(selectedDay)),
+                info.holiday && E("div", { style: { fontSize: 12.5, color: C.rust, marginBottom: 6 } }, "★ ", info.holiday),
+                info.sprintsOnDay.length > 0 && E("div", { style: { fontSize: 12.5, color: C.inkDim, marginBottom: 6 } },
+                    "Sprint(s): ", info.sprintsOnDay.map((sp) => (courseById.get(sp.courseId) || {}).name || "General").join(", ")),
+                info.focusOnDay.length > 0 && E("div", { style: { fontSize: 12.5, color: C.sage, marginBottom: 6 } },
+                    "Focus day: ", info.focusOnDay.map((c) => c.name).join(", ")),
+                info.daySessions.length === 0 ? E(Empty, { text: "No sessions logged this day." }) :
+                    E("div", { style: { display: "grid", gap: 6 } }, info.daySessions.map((s) => E("div", {
+                        key: s.id,
+                        style: { display: "flex", justifyContent: "space-between", alignItems: "center", padding: "6px 0", borderBottom: `1px solid ${C.line}`, cursor: "pointer" },
+                        onClick: () => onEditSession(s.id),
+                    },
+                        E("span", { style: { fontSize: 13 } },
+                            (s.blocks || []).length, " block", (s.blocks || []).length === 1 ? "" : "s",
+                            (s.recordings || []).length > 0 ? " · ▶ recording" : ""),
+                        E("span", { style: { fontSize: 11, color: C.brass } }, "Open →")))));
+        })());
 }
 /* ---------------------------------------------------------
    TECHNIQUES TAB
@@ -3702,6 +3869,13 @@ function NeckQuizMode({ onBack }) {
 /* ---------------------------------------------------------
    COURSE MATERIAL — courses, uploaded lessons, reader, notes index
 --------------------------------------------------------- */
+const WEEKDAYS = [["mon", "Mon"], ["tue", "Tue"], ["wed", "Wed"], ["thu", "Thu"], ["fri", "Fri"], ["sat", "Sat"], ["sun", "Sun"]];
+const CHECKUP_QUESTIONS = [
+    "How would you rate your progress in this course?",
+    "What went well?",
+    "What would you focus on next time?",
+    "Any additional notes?",
+];
 function CourseMaterialTab({ coursesIndex, setCoursesIndex, notes, setNotes, techniques }) {
     const [view, setView] = useState("library"); // library | notesIndex
     const [selectedCourseId, setSelectedCourseId] = useState(null);
@@ -3712,7 +3886,12 @@ function CourseMaterialTab({ coursesIndex, setCoursesIndex, notes, setNotes, tec
     const [uploadError, setUploadError] = useState("");
     const [uploading, setUploading] = useState(false);
     const [youtubeForm, setYoutubeForm] = useState({ title: "", url: "" });
+    const [showEndForm, setShowEndForm] = useState(false);
+    const [checkupAnswers, setCheckupAnswers] = useState(["", "", "", ""]);
+    const [checkups, setCheckups] = useState([]);
+    const [partName, setPartName] = useState("");
     const selectedCourse = coursesIndex.find((c) => c.id === selectedCourseId) || null;
+    const continuedAsCourse = selectedCourse ? coursesIndex.find((c) => c.previousCourseId === selectedCourse.id) : null;
     const loadCourse = useCallback(async (courseId) => {
         setContentLoading(true);
         setUploadError("");
@@ -3729,6 +3908,10 @@ function CourseMaterialTab({ coursesIndex, setCoursesIndex, notes, setNotes, tec
         setSelectedLessonId(null);
         setView("library");
         loadCourse(id);
+        setCheckups([]);
+        const c = coursesIndex.find((x) => x.id === id);
+        if (c && c.status === "completed")
+            loadCheckups(id);
     };
     const addCourse = async (e) => {
         e.preventDefault();
@@ -3744,6 +3927,32 @@ function CourseMaterialTab({ coursesIndex, setCoursesIndex, notes, setNotes, tec
     const updateSprintLength = async (value, unit) => {
         const updated = await api.courses.patch(selectedCourseId, { sprintLengthValue: value, sprintLengthUnit: unit });
         setCoursesIndex((idx) => idx.map((c) => (c.id === selectedCourseId ? { ...c, sprintLengthValue: updated.sprintLengthValue, sprintLengthUnit: updated.sprintLengthUnit } : c)));
+    };
+    const toggleFocusDay = async (day) => {
+        const current = selectedCourse.focusDays || [];
+        const next = current.includes(day) ? current.filter((d) => d !== day) : [...current, day];
+        const updated = await api.courses.patch(selectedCourseId, { focusDays: next });
+        setCoursesIndex((idx) => idx.map((c) => (c.id === selectedCourseId ? { ...c, focusDays: updated.focusDays } : c)));
+    };
+    const loadCheckups = useCallback((courseId) => { api.courses.checkups(courseId).then(setCheckups).catch(() => setCheckups([])); }, []);
+    const submitEndCourse = async (e) => {
+        e.preventDefault();
+        const updated = await api.courses.end(selectedCourseId, checkupAnswers.map((answer) => ({ answer })));
+        setCoursesIndex((idx) => idx.map((c) => (c.id === selectedCourseId ? { ...c, status: updated.status, completedAt: updated.completedAt } : c)));
+        setShowEndForm(false);
+        setCheckupAnswers(["", "", "", ""]);
+        loadCheckups(selectedCourseId);
+    };
+    const reopenCourse = async () => {
+        const updated = await api.courses.reopen(selectedCourseId);
+        setCoursesIndex((idx) => idx.map((c) => (c.id === selectedCourseId ? { ...c, status: updated.status, completedAt: updated.completedAt } : c)));
+    };
+    const startPart2 = async (e) => {
+        e.preventDefault();
+        const entry = await api.courses.continueCourse(selectedCourseId, partName.trim());
+        setCoursesIndex((idx) => [...idx, entry]);
+        setPartName("");
+        openCourse(entry.id);
     };
     // Full refresh after a lesson<->course link changes or a course is spun up from a
     // lesson — simplest correct way to pick up every course's updated lesson union.
@@ -3845,12 +4054,15 @@ function CourseMaterialTab({ coursesIndex, setCoursesIndex, notes, setNotes, tec
             coursesIndex.length === 0 ? (React.createElement(Empty, { text: "No courses yet \u2014 add one above." })) : (coursesIndex.map((c) => (React.createElement(Card, { key: c.id, style: { cursor: "pointer" }, onClick: () => openCourse(c.id) },
                 React.createElement("div", { style: { display: "flex", justifyContent: "space-between", alignItems: "start" } },
                     React.createElement("div", null,
-                        React.createElement("div", { style: { fontFamily: FONT_DISPLAY, fontSize: 17, fontWeight: 600 } }, c.name),
+                        React.createElement("div", { style: { display: "flex", alignItems: "center", gap: 8 } },
+                            React.createElement("div", { style: { fontFamily: FONT_DISPLAY, fontSize: 17, fontWeight: 600 } }, c.name),
+                            React.createElement("span", { style: { fontFamily: FONT_MONO, fontSize: 9.5, letterSpacing: "0.05em", padding: "2px 6px", borderRadius: 4, color: c.status === "completed" ? C.inkFaint : C.sage, border: `1px solid ${c.status === "completed" ? C.line : C.sage}66` } }, c.status === "completed" ? "COMPLETED" : "ACTIVE")),
                         c.description && React.createElement("div", { style: { fontSize: 12.5, color: C.inkDim, marginTop: 2 } }, c.description),
                         React.createElement("div", { style: { fontFamily: FONT_MONO, fontSize: 11, color: C.inkFaint, marginTop: 6 } },
                             (c.lessons || []).length,
                             " lesson",
-                            (c.lessons || []).length === 1 ? "" : "s")),
+                            (c.lessons || []).length === 1 ? "" : "s"),
+                        (() => { const next = coursesIndex.find((x) => x.previousCourseId === c.id); return next && React.createElement("div", { style: { fontSize: 11, color: C.brass, marginTop: 4, cursor: "pointer" }, onClick: (e) => { e.stopPropagation(); openCourse(next.id); } }, "→ continued as ", next.name); })()),
                     React.createElement(Btn, { variant: "danger", onClick: (e) => { e.stopPropagation(); deleteCourse(c.id); }, style: { fontSize: 11, padding: "5px 8px", flexShrink: 0 } }, "\u2715")))))))),
         view === "library" && selectedCourseId && !selectedLessonId && (React.createElement(React.Fragment, null,
             React.createElement(Btn, { variant: "ghost", onClick: () => { setSelectedCourseId(null); setCourseContent(null); } }, "\u2190 All courses"),
@@ -3868,8 +4080,36 @@ function CourseMaterialTab({ coursesIndex, setCoursesIndex, notes, setNotes, tec
                         onChange: (e) => updateSprintLength(selectedCourse.sprintLengthValue, e.target.value),
                     }, ["day", "week", "month", "year"].map((u) => React.createElement("option", { key: u, value: u }, u + "s")))),
                 selectedCourse && React.createElement("div", { style: { marginTop: 10, paddingTop: 10, borderTop: `1px solid ${C.line}` } },
+                    E(Label, null, "Focus days"),
+                    E("div", { style: { fontSize: 11.5, color: C.inkFaint, marginBottom: 6 } }, "Shown on the Calendar every matching weekday while this course is active."),
+                    E("div", { style: { display: "flex", gap: 6 } }, WEEKDAYS.map(([code, label]) => E("button", {
+                        key: code, onClick: () => toggleFocusDay(code), type: "button",
+                        style: { fontFamily: FONT_MONO, fontSize: 11, padding: "4px 9px", borderRadius: 5, cursor: "pointer", border: `1px solid ${(selectedCourse.focusDays || []).includes(code) ? C.brass : C.line}`, background: (selectedCourse.focusDays || []).includes(code) ? C.brass : "transparent", color: (selectedCourse.focusDays || []).includes(code) ? "#1A1509" : C.inkDim },
+                    }, label)))),
+                selectedCourse && React.createElement("div", { style: { marginTop: 10, paddingTop: 10, borderTop: `1px solid ${C.line}` } },
                     React.createElement(Label, null, "Techniques"),
-                    E(TechniqueTagPicker, { scopeType: "course", scopeId: selectedCourse.id, techniques: techniques }))),
+                    E(TechniqueTagPicker, { scopeType: "course", scopeId: selectedCourse.id, techniques: techniques })),
+                selectedCourse && E("div", { style: { marginTop: 10, paddingTop: 10, borderTop: `1px solid ${C.line}` } },
+                    E(Label, null, "Course status"),
+                    selectedCourse.status === "active" && !showEndForm && E(Btn, { variant: "ghost", onClick: () => setShowEndForm(true) }, "End this course"),
+                    selectedCourse.status === "active" && showEndForm && E("form", { onSubmit: submitEndCourse, style: { display: "grid", gap: 8, marginTop: 8 } },
+                        CHECKUP_QUESTIONS.map((q, i) => E("div", { key: i },
+                            E("div", { style: { fontSize: 12, color: C.inkDim, marginBottom: 4 } }, q),
+                            E(TextArea, { rows: 2, value: checkupAnswers[i], onChange: (e) => setCheckupAnswers((a) => a.map((v, j) => (j === i ? e.target.value : v))) }))),
+                        E("div", { style: { display: "flex", gap: 8 } },
+                            E(Btn, { type: "submit" }, "Submit & mark completed"),
+                            E(Btn, { variant: "ghost", type: "button", onClick: () => setShowEndForm(false) }, "Cancel"))),
+                    selectedCourse.status === "completed" && E("div", { style: { display: "grid", gap: 10 } },
+                        E("div", { style: { fontSize: 12.5, color: C.inkFaint } }, "Completed ", (selectedCourse.completedAt || "").slice(0, 10)),
+                        checkups[0] && E("div", { style: { display: "grid", gap: 6 } }, checkups[0].answers.map((a, i) => E("div", { key: i },
+                            E("div", { style: { fontSize: 11.5, color: C.inkFaint } }, a.question),
+                            E("div", { style: { fontSize: 13 } }, a.answer || "—")))),
+                        E("div", { style: { display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" } },
+                            E(Btn, { variant: "ghost", onClick: reopenCourse }, "Reopen this course"),
+                            !continuedAsCourse && E("form", { onSubmit: startPart2, style: { display: "flex", gap: 8 } },
+                                E(Input, { value: partName, onChange: (e) => setPartName(e.target.value), placeholder: `${selectedCourse.name} — Part 2`, style: { width: 200 } }),
+                                E(Btn, { type: "submit" }, "Start Part 2")),
+                            continuedAsCourse && E("span", { style: { fontSize: 12, color: C.brass, cursor: "pointer" }, onClick: () => openCourse(continuedAsCourse.id) }, "→ continued as ", continuedAsCourse.name))))),
             React.createElement(Card, null,
                 React.createElement(Label, null, "Upload a lesson (Word .docx, PDF, RTF, or image)"),
                 React.createElement("input", { type: "file", accept: ".docx,.pdf,.rtf,image/png,image/jpeg,image/gif,image/webp", disabled: uploading, onChange: (e) => { if (e.target.files[0])
@@ -3956,17 +4196,18 @@ function LessonReader({ course, lessonMeta, lessonContent, notes, setNotes, onBa
                     border: `1px solid ${C.line}`,
                     borderRadius: 8,
                     padding: ["image", "pdf", "youtube"].includes(lessonContent.fileType) ? 0 : 14,
-                    maxHeight: 500,
+                    height: 500,
+                    resize: "vertical",
                     overflow: "auto",
                 } },
                 lessonContent.fileType === "docx" && (React.createElement("div", { style: { fontSize: 14, lineHeight: 1.6, color: C.ink }, dangerouslySetInnerHTML: { __html: lessonContent.html } })),
                 lessonContent.fileType === "rtf" && (React.createElement("pre", { style: { whiteSpace: "pre-wrap", fontFamily: FONT_BODY, fontSize: 14, lineHeight: 1.6, margin: 0, color: C.ink } }, lessonContent.text)),
-                lessonContent.fileType === "pdf" && (React.createElement("iframe", { title: lessonMeta.title, src: lessonContent.dataUrl, style: { width: "100%", height: 500, border: "none" } })),
+                lessonContent.fileType === "pdf" && (React.createElement("iframe", { title: lessonMeta.title, src: lessonContent.dataUrl, style: { width: "100%", height: "100%", border: "none" } })),
                 lessonContent.fileType === "image" && (React.createElement("img", { src: lessonContent.dataUrl, alt: lessonMeta.title, style: { maxWidth: "100%", display: "block" } })),
                 lessonContent.fileType === "youtube" && (playYoutubeHere
                     ? E("iframe", {
                         title: lessonMeta.title, src: `https://www.youtube.com/embed/${extractYouTubeId(lessonContent.dataUrl)}`,
-                        style: { width: "100%", height: 360, border: "none", display: "block" },
+                        style: { width: "100%", height: "100%", border: "none", display: "block" },
                         allow: "accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture", allowFullScreen: true,
                     })
                     : E("div", { style: { padding: 24, textAlign: "center", color: C.inkFaint, fontSize: 13 } }, "Choose how to watch this video above.")))),
