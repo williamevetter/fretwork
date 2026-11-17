@@ -116,3 +116,8 @@ New account roles (admin / test_admin / test_instructor / test_user / user) with
 *Major*
 
 Every account must now accept a terms/warnings statement before using the app — a full-screen gate shown right after login (same pattern as the existing forced-password-change screen). Admins (real admins only, not test_admins) can edit the statement text from the Admin dashboard; saving a change bumps its version, which forces every user — including people who already accepted — to accept it again on their next login.
+
+## v11 — Calendar, course lifecycle, resizable document viewer, deferred session logging
+*Major*
+
+New Calendar tab (month grid + day drill-down) overlaying sessions, sprint date ranges, recordings, per-course "focus day" markers, and US federal holidays. Courses can now be marked completed with a short checkup questionnaire, reopened, or continued into a linked "Part 2" course that copies sprint cadence and focus days — also fixed a pre-existing bug where editing a course's sprint length 500'd on every call. The document viewer can now be resized vertically. Sessions no longer get logged the instant "Start blank" is clicked — a session is only actually created once a timer starts, a block is saved, a recording finishes, or the new "Save session" button is used.
