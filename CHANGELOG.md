@@ -111,3 +111,8 @@ Planned sessions can now include structured work-item blocks (category, material
 *Major*
 
 New account roles (admin / test_admin / test_instructor / test_user / user) with a scoping rule enforced on every admin action: a test_admin can only manage test_instructor/test_user accounts — never real admins, other test_admins, or real production users. Provisioned 9 test accounts (3 of each test role) to exercise this.
+
+## v10 — User acceptance statement
+*Major*
+
+Every account must now accept a terms/warnings statement before using the app — a full-screen gate shown right after login (same pattern as the existing forced-password-change screen). Admins (real admins only, not test_admins) can edit the statement text from the Admin dashboard; saving a change bumps its version, which forces every user — including people who already accepted — to accept it again on their next login.
