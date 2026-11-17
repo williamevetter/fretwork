@@ -81,6 +81,8 @@ const api = {
     requirePasswordChange: (id) => apiCall("POST", `/admin/users/${id}/require-password-change`),
     updateUser: (id, fields) => apiCall("PATCH", `/admin/users/${id}`, fields),
     deleteUser: (id) => apiCall("DELETE", `/admin/users/${id}`),
+    getAcceptanceStatement: () => apiCall("GET", "/admin/acceptance-statement"),
+    updateAcceptanceStatement: (body) => apiCall("PATCH", "/admin/acceptance-statement", { body }),
   },
   notices: {
     pending: () => apiCall("GET", "/notices/pending"),
@@ -1555,8 +1557,24 @@ function AdminDashboardTab({ me }) {
     const [flashMsgs, setFlashMsgs] = useState({});
     const [editingId, setEditingId] = useState(null);
     const [editEmailDraft, setEditEmailDraft] = useState("");
+    const [statement, setStatement] = useState(null);
+    const [statementDraft, setStatementDraft] = useState("");
+    const [statementMsg, setStatementMsg] = useState("");
     const load = () => { api.admin.users().then(setUsers).catch((e) => setError(String(e))); };
     useEffect(load, []);
+    useEffect(() => {
+        if (isTestAdmin) return;
+        api.admin.getAcceptanceStatement().then((s) => { setStatement(s); setStatementDraft(s.body); }).catch((e) => setError(String(e)));
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, []);
+    const saveStatement = async () => {
+        if (!window.confirm("Save this statement and force every user to re-accept it on their next login?")) return;
+        try {
+            const r = await api.admin.updateAcceptanceStatement(statementDraft.trim());
+            setStatement((s) => ({ ...s, version: r.version, body: statementDraft.trim() }));
+            setStatementMsg(`Saved as version ${r.version}. Everyone will be asked to accept it again.`);
+        } catch (e) { setError(String(e)); }
+    };
     const flash = (id, text) => {
         setFlashMsgs((m) => ({ ...m, [id]: text }));
         setTimeout(() => setFlashMsgs((m) => ({ ...m, [id]: null })), 4000);
@@ -1642,7 +1660,21 @@ function AdminDashboardTab({ me }) {
                                 resetResults[u.id] && E("div", { style: { fontFamily: FONT_MONO, fontSize: 11, background: C.bg2, border: `1px solid ${C.line}`, borderRadius: 5, padding: "4px 6px", userSelect: "all" } }, resetResults[u.id]),
                                 E("div", { style: { display: "flex", gap: 6 } },
                                     E("input", { value: noticeDrafts[u.id] || "", onChange: (e) => setNoticeDrafts((d) => ({ ...d, [u.id]: e.target.value })), placeholder: "notice message…", style: { flex: 1, fontSize: 11, padding: "3px 6px", borderRadius: 5, border: `1px solid ${C.line}`, background: C.bg2, color: C.ink } }),
-                                    E("button", { onClick: () => sendNotice(u), style: { background: "transparent", border: `1px solid ${C.line}`, color: C.inkDim, borderRadius: 5, padding: "3px 8px", cursor: "pointer", fontSize: 11 } }, "Send")))))))))));
+                                    E("button", { onClick: () => sendNotice(u), style: { background: "transparent", border: `1px solid ${C.line}`, color: C.inkDim, borderRadius: 5, padding: "3px 8px", cursor: "pointer", fontSize: 11 } }, "Send")))))))))),
+        !isTestAdmin && statement && E("div", { style: { marginTop: 24, maxWidth: 640 } },
+            E("h3", { style: { fontFamily: FONT_DISPLAY, fontSize: 15, marginBottom: 8 } }, "User acceptance statement"),
+            E("div", { style: { fontSize: 11.5, color: C.inkFaint, marginBottom: 8 } },
+                "Shown to every user who has not yet accepted the current version (currently v", statement.version, "). Saving a change bumps the version and asks everyone to accept it again."),
+            E("textarea", {
+                value: statementDraft, onChange: (e) => { setStatementDraft(e.target.value); setStatementMsg(""); }, rows: 8,
+                style: { width: "100%", fontFamily: FONT_MONO, fontSize: 12, padding: 8, borderRadius: 6, border: `1px solid ${C.line}`, background: C.bg2, color: C.ink, resize: "vertical", boxSizing: "border-box" },
+            }),
+            E("div", { style: { display: "flex", gap: 10, alignItems: "center", marginTop: 8 } },
+                E("button", {
+                    onClick: saveStatement, disabled: statementDraft.trim() === statement.body || !statementDraft.trim(),
+                    style: { background: C.brass, border: "none", color: "#1A1509", borderRadius: 6, padding: "6px 12px", cursor: "pointer", fontSize: 12, fontWeight: 700 },
+                }, "Save & force re-acceptance"),
+                statementMsg && E("span", { style: { fontSize: 11.5, color: C.sage } }, statementMsg))));
 }
 /* ---------------------------------------------------------
    DATE RANGE — shared quick-range resolver + picker (Dashboard now,
@@ -4497,7 +4529,41 @@ function AuthGate() {
         return React.createElement(AuthForms, { onAuthed: checkAuth, justVerified: justVerified });
     if (me && me.mustChangePassword)
         return React.createElement(ForcePasswordChangeForm, { onDone: checkAuth, onLogout: logout });
+    if (me && me.needsAcceptance)
+        return React.createElement(AcceptanceGateForm, { onDone: checkAuth, onLogout: logout });
     return React.createElement(AuthedShell, { me: me, onLogout: logout, onPrefsSaved: checkAuth });
+}
+function AcceptanceGateForm({ onDone, onLogout }) {
+    const [statement, setStatement] = useState(null);
+    const [error, setError] = useState("");
+    const [busy, setBusy] = useState(false);
+    useEffect(() => {
+        fetch("/api/auth/acceptance-statement", { credentials: "include" })
+            .then((r) => r.json())
+            .then(setStatement)
+            .catch((e) => setError(String(e)));
+    }, []);
+    const accept = async () => {
+        setBusy(true);
+        setError("");
+        const res = await fetch("/api/auth/accept-statement", { method: "POST", credentials: "include" });
+        setBusy(false);
+        if (res.ok) onDone();
+        else setError("Something went wrong — try again.");
+    };
+    return (React.createElement("div", { style: { background: C.bg, minHeight: "100vh", display: "flex", alignItems: "center", justifyContent: "center", padding: 20 } },
+        React.createElement("div", { style: { width: "100%", maxWidth: 480 } },
+            React.createElement(Card, null,
+                React.createElement(Label, null, "Before you continue"),
+                React.createElement("div", { style: { fontSize: 12.5, color: C.inkFaint, marginBottom: 10 } }, "Please read and accept the terms below to keep using Fretwork."),
+                !statement && !error && React.createElement("div", { style: { fontSize: 12.5, color: C.inkFaint } }, "loading…"),
+                error && React.createElement("div", { style: { fontSize: 12.5, color: C.rust, marginBottom: 10 } }, error),
+                statement && React.createElement("div", {
+                    style: { whiteSpace: "pre-wrap", fontSize: 12.5, lineHeight: 1.6, color: C.ink, background: C.bg2, border: `1px solid ${C.line}`, borderRadius: 8, padding: 12, maxHeight: 260, overflowY: "auto", marginBottom: 12 },
+                }, statement.body),
+                statement && React.createElement("div", { style: { display: "flex", gap: 10, alignItems: "center" } },
+                    React.createElement(Btn, { onClick: accept, disabled: busy }, "I Accept"),
+                    React.createElement("button", { onClick: onLogout, style: { background: "none", border: "none", color: C.inkFaint, cursor: "pointer", fontFamily: FONT_MONO, fontSize: 11.5, padding: 0 } }, "Log out instead"))))));
 }
 function ForcePasswordChangeForm({ onDone, onLogout }) {
     const [pw, setPw] = useState("");

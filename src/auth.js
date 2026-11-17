@@ -130,11 +130,26 @@ router.get("/me", requireAuth, (req, res) => {
   const user = db.prepare("SELECT * FROM users WHERE id = ?").get(req.user.id);
   if (!user) return res.status(401).json({ error: "Not found." });
   const { notifyPrefs, gearReminderDays, name } = rowToUser(user);
+  const statement = db.prepare("SELECT version FROM acceptance_statement WHERE id = 1").get();
   res.json({
     email: user.email, name, notifyPrefs, gearReminderDays,
     isAdmin: !!user.is_admin, role: user.role, impersonatedBy: req.user.impersonatedBy, lastLoginAt: user.last_login_at,
     mustChangePassword: !!user.must_change_password,
+    needsAcceptance: user.accepted_statement_version < statement.version,
   });
+});
+
+router.get("/acceptance-statement", requireAuth, (req, res) => {
+  const statement = db.prepare("SELECT version, body FROM acceptance_statement WHERE id = 1").get();
+  res.json(statement);
+});
+
+// No admin/scope check beyond being logged in — this only ever marks the CURRENT
+// user as having accepted the CURRENT version, nothing else.
+router.post("/accept-statement", requireAuth, (req, res) => {
+  const statement = db.prepare("SELECT version FROM acceptance_statement WHERE id = 1").get();
+  db.prepare("UPDATE users SET accepted_statement_version = ? WHERE id = ?").run(statement.version, req.user.id);
+  res.json({ ok: true });
 });
 
 // Used when must_change_password is set (by an admin) — no currentPassword check,

@@ -30,6 +30,15 @@ function canActOn(actingUserId, targetRole) {
 }
 const SCOPE_DENIED = { error: "Test admin accounts can only manage test instructor/user accounts." };
 
+// The acceptance statement is a global, every-user-affecting setting, not a
+// per-account action — restricted to real admins even though test_admin otherwise
+// shares this whole router.
+function isRealAdmin(userId) {
+  const row = db.prepare("SELECT role FROM users WHERE id = ?").get(userId);
+  return !!row && row.role === "admin";
+}
+const ADMIN_ONLY = { error: "Only full admin accounts can manage the acceptance statement." };
+
 // Real bytes for recordings (grouped by owner), approximate character-count bytes
 // for course material (there's no clean per-user disk breakdown inside one shared
 // SQLite file otherwise, so this is built deliberately rather than assumed).
@@ -182,6 +191,23 @@ router.post("/users/:id/reset-password", async (req, res) => {
   db.prepare("UPDATE users SET password_hash = ? WHERE id = ?").run(passwordHash, target.id);
   logAudit(req.user.id, "reset-password", target.id, {}); // never the plaintext
   res.json({ ok: true, temporaryPassword });
+});
+
+router.get("/acceptance-statement", (req, res) => {
+  if (!isRealAdmin(req.user.id)) return res.status(403).json(ADMIN_ONLY);
+  const statement = db.prepare("SELECT version, body, updated_at FROM acceptance_statement WHERE id = 1").get();
+  res.json({ version: statement.version, body: statement.body, updatedAt: statement.updated_at });
+});
+
+router.patch("/acceptance-statement", (req, res) => {
+  if (!isRealAdmin(req.user.id)) return res.status(403).json(ADMIN_ONLY);
+  const body = (req.body && req.body.body || "").trim();
+  if (!body) return res.status(400).json({ error: "Statement body is required." });
+  const current = db.prepare("SELECT version FROM acceptance_statement WHERE id = 1").get();
+  const nextVersion = current.version + 1;
+  db.prepare("UPDATE acceptance_statement SET version = ?, body = ?, updated_at = ? WHERE id = 1").run(nextVersion, body, nowISO());
+  logAudit(req.user.id, "update-acceptance-statement", null, { newVersion: nextVersion });
+  res.json({ ok: true, version: nextVersion });
 });
 
 module.exports = router;

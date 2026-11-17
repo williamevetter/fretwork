@@ -325,6 +325,26 @@ const MIGRATIONS = [
   ALTER TABLE users ADD COLUMN role TEXT NOT NULL DEFAULT 'user';
   UPDATE users SET role = 'admin' WHERE is_admin = 1;
   `,
+  // User acceptance statement — a single current version of a terms/warnings
+  // statement every account must accept before using the app. Editing it (admin-only)
+  // bumps the version, which re-triggers the gate for everyone, since their
+  // accepted_statement_version is now behind the new current version.
+  `
+  CREATE TABLE acceptance_statement (
+    id INTEGER PRIMARY KEY CHECK (id = 1),
+    version INTEGER NOT NULL DEFAULT 1,
+    body TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+  );
+  INSERT INTO acceptance_statement (id, version, body, updated_at) VALUES (1, 1, 'This is a passion project — no warranty is offered.
+Support is best-try, not guaranteed.
+Do not store anything you do not want the general public or others to see — no privacy is guaranteed.
+Do not abuse or scrape the site.
+Unauthorized access is a federal crime — we will prosecute and press charges.
+No use of this site to perform any activities against your local or federal law, or other unethical behavior.
+No racist, sexist, or religious slurs — ZERO TOLERANCE.', '${new Date().toISOString()}');
+  ALTER TABLE users ADD COLUMN accepted_statement_version INTEGER NOT NULL DEFAULT 0;
+  `,
 ];
 
 function runMigrations() {
