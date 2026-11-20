@@ -121,3 +121,8 @@ Every account must now accept a terms/warnings statement before using the app �
 *Major*
 
 New Calendar tab (month grid + day drill-down) overlaying sessions, sprint date ranges, recordings, per-course "focus day" markers, and US federal holidays. Courses can now be marked completed with a short checkup questionnaire, reopened, or continued into a linked "Part 2" course that copies sprint cadence and focus days — also fixed a pre-existing bug where editing a course's sprint length 500'd on every call. The document viewer can now be resized vertically. Sessions no longer get logged the instant "Start blank" is clicked — a session is only actually created once a timer starts, a block is saved, a recording finishes, or the new "Save session" button is used.
+
+## v11.1 — Fix document viewer resize on PDF/YouTube
+*Minor*
+
+The resizable wrapper added in v11 gave PDF/YouTube content zero padding, so the embedded `<iframe>` covered the native resize grip's hit area at the bottom-right corner — an iframe is its own browsing context, so the drag never started. Reserved a bare strip of real padding along the bottom so that corner stays on the outer div.
