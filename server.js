@@ -25,6 +25,7 @@ const adminRouter = require("./src/routes/admin");
 const noticesRouter = require("./src/routes/notices");
 const contactsRouter = require("./src/routes/contacts");
 const tagsRouter = require("./src/routes/tags");
+const changelogRouter = require("./src/routes/changelog");
 require("./src/reminders"); // schedules cron jobs as a side effect
 
 const app = express();
@@ -48,6 +49,7 @@ app.use("/api/admin", adminRouter);
 app.use("/api/notices", noticesRouter);
 app.use("/api/contacts", contactsRouter);
 app.use("/api/tags", tagsRouter);
+app.use("/api/changelog", changelogRouter);
 
 app.use(express.static(path.join(__dirname, "public")));
 app.get("*", (req, res) => {

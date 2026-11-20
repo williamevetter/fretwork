@@ -150,6 +150,7 @@ const api = {
     create: (body) => apiCall("POST", "/tunings", body),
     remove: (id) => apiCall("DELETE", `/tunings/${id}`),
   },
+  changelog: () => apiCall("GET", "/changelog"),
 };
 </script>
 <script>
@@ -4846,6 +4847,9 @@ function ForcePasswordChangeForm({ onDone, onLogout }) {
 }
 function AuthedShell({ me, onLogout, onPrefsSaved }) {
     const [showAccount, setShowAccount] = useState(false);
+    const [showChangelog, setShowChangelog] = useState(false);
+    const [appVersion, setAppVersion] = useState("");
+    useEffect(() => { api.changelog().then((d) => setAppVersion(d.currentVersion || "")).catch(() => {}); }, []);
     const exitImpersonation = async () => {
         await fetch("/api/auth/stop-impersonating", { method: "POST", credentials: "include" });
         onPrefsSaved();
@@ -4868,13 +4872,15 @@ function AuthedShell({ me, onLogout, onPrefsSaved }) {
                 color: C.inkFaint,
             } },
             React.createElement("span", null, me.email),
-            React.createElement("div", { style: { display: "flex", gap: 14 } },
+            React.createElement("div", { style: { display: "flex", gap: 14, alignItems: "center" } },
+                E("button", { onClick: () => setShowChangelog(true), style: { background: "none", border: `1px solid ${C.line}`, borderRadius: 4, color: C.inkFaint, cursor: "pointer", fontFamily: FONT_MONO, fontSize: 10.5, padding: "2px 6px" } }, appVersion ? appVersion : "…"),
                 React.createElement("button", { onClick: () => setShowAccount(true), style: { background: "none", border: "none", color: C.brass, cursor: "pointer", fontFamily: FONT_MONO, fontSize: 11.5, padding: 0 } }, "Account"),
                 React.createElement("button", { onClick: onLogout, style: { background: "none", border: "none", color: C.inkFaint, cursor: "pointer", fontFamily: FONT_MONO, fontSize: 11.5, padding: 0 } }, "Log out"))),
         React.createElement(App, { me: me }),
         showAccount && (React.createElement(AccountModal, { me: me, onClose: () => setShowAccount(false), onSaved: () => {
                 onPrefsSaved();
-            } }))));
+            } })),
+        showChangelog && E(ChangelogModal, { onClose: () => setShowChangelog(false) })));
 }
 function AuthForms({ onAuthed, justVerified }) {
     const [mode, setMode] = useState("login"); // login | register | forgot
@@ -5056,6 +5062,32 @@ function AccountModal({ me, onClose, onSaved }) {
                     React.createElement(Input, { type: "password", placeholder: "New password", required: true, minLength: 8, value: pw.newPassword, onChange: (e) => setPw({ ...pw, newPassword: e.target.value }) }),
                     React.createElement(Btn, { type: "submit", disabled: busy }, "Update password")),
                 msg && React.createElement("div", { style: { fontSize: 12.5, marginTop: 10, color: msg.type === "error" ? C.rust : C.sage } }, msg.text)))));
+}
+const TAG_COLOR = { Major: C.brass, Significant: C.string, Minor: C.inkFaint };
+function ChangelogModal({ onClose }) {
+    const [data, setData] = useState(null);
+    const [error, setError] = useState("");
+    useEffect(() => { api.changelog().then(setData).catch((e) => setError(String(e))); }, []);
+    const mailSubject = encodeURIComponent(`Fretwork issue${data ? ` (${data.currentVersion})` : ""}`);
+    return E("div", { style: { position: "fixed", inset: 0, background: "#000000aa", display: "flex", alignItems: "center", justifyContent: "center", zIndex: 50, padding: 16 } },
+        E("div", { style: { width: "100%", maxWidth: 560, maxHeight: "90vh", overflow: "auto" } },
+            E(Card, null,
+                E("div", { style: { display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 12 } },
+                    E("div", { style: { fontFamily: FONT_DISPLAY, fontSize: 18, fontWeight: 600 } }, "Changelog"),
+                    E("button", { onClick: onClose, style: { background: "none", border: "none", color: C.inkFaint, cursor: "pointer", fontSize: 18 } }, "✕")),
+                error && E("div", { style: { color: C.rust, fontSize: 13 } }, error),
+                !data && !error && E("div", { style: { color: C.inkFaint, fontSize: 13 } }, "loading…"),
+                data && E("div", { style: { display: "grid", gap: 16 } }, data.entries.map((entry) => E("div", { key: entry.version },
+                    E("div", { style: { display: "flex", alignItems: "baseline", gap: 8 } },
+                        E("span", { style: { fontFamily: FONT_MONO, fontSize: 13, fontWeight: 700, color: C.brass } }, entry.version),
+                        E("span", { style: { fontFamily: FONT_DISPLAY, fontSize: 15, fontWeight: 600 } }, entry.title),
+                        entry.tag && E("span", { style: { fontFamily: FONT_MONO, fontSize: 9.5, letterSpacing: "0.04em", padding: "1px 5px", borderRadius: 4, color: TAG_COLOR[entry.tag] || C.inkFaint, border: `1px solid ${(TAG_COLOR[entry.tag] || C.inkFaint)}66` } }, entry.tag.toUpperCase())),
+                    E("div", { style: { fontSize: 12.5, color: C.inkDim, marginTop: 4, lineHeight: 1.5 } }, entry.body)))),
+                E("div", { style: { borderTop: `1px solid ${C.line}`, margin: "18px 0 12px" } }),
+                E("div", { style: { fontSize: 12.5, color: C.inkFaint, marginBottom: 8 } }, "Found a bug or have a feature idea?"),
+                E("div", { style: { display: "flex", gap: 14 } },
+                    E("a", { href: `mailto:freetacosfretwork@gmail.com?subject=${mailSubject}`, style: { fontSize: 12.5, color: C.brass } }, "Email us"),
+                    E("a", { href: "https://github.com/williamevetter/fretwork/issues/new", target: "_blank", rel: "noreferrer", style: { fontSize: 12.5, color: C.brass } }, "Open a GitHub issue")))));
 }
 /* ---------------------------------------------------------
    GUITAR TUNER
