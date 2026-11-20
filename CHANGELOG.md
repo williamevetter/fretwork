@@ -146,3 +146,8 @@ Real CSS breakpoints now adapt the nav/header/main layout to phone/tablet/comput
 *Significant*
 
 The course detail view gained a Details card (editable description, a URL field, free-text notes, start/end dates with an "Indefinite" checkbox) and a Goals card: a time-spent target in minutes, windowed by a configurable period — custom (all-time total), sprint (the current active sprint), session (most recent session), or daily/weekly/monthly (a rolling window) — shown as a progress bar, plus a goal type and free-text description. Found and fixed a real bug while testing: the "most recent session" date sort broke on same-day ties.
+
+## v15 — Dashboard sprint/session telemetry, breakdown pies, top exercises
+*Significant*
+
+Each Active Sprint card on the Dashboard now shows that sprint's own Total practiced / Avg per session / Sessions logged. Added three pie charts sharing the dashboard's date-range filter — Sprint breakdown, Course breakdown, Technique breakdown — plus a Top 5 Logged Exercises list ranked by time spent. Pure frontend change, no schema/backend involved.
