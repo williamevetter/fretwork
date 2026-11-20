@@ -54,6 +54,7 @@ const api = {
   techniques: {
     list: () => apiCall("GET", "/techniques"),
     create: (name) => apiCall("POST", "/techniques", { name }),
+    patch: (id, name) => apiCall("PATCH", `/techniques/${id}`, { name }),
     remove: (id) => apiCall("DELETE", `/techniques/${id}`),
   },
   sprints: {
@@ -142,6 +143,7 @@ const api = {
     remove: (id) => apiCall("DELETE", `/courses/${id}`),
     addLesson: (courseId, body) => apiCall("POST", `/courses/${courseId}/lessons`, body),
     removeLesson: (courseId, lessonId) => apiCall("DELETE", `/courses/${courseId}/lessons/${lessonId}`),
+    patchLesson: (courseId, lessonId, title) => apiCall("PATCH", `/courses/${courseId}/lessons/${lessonId}`, { title }),
     linkLessonToCourse: (lessonId, courseId) => apiCall("POST", `/courses/lessons/${lessonId}/courses`, { courseId }),
     unlinkLessonFromCourse: (lessonId, courseId) => apiCall("DELETE", `/courses/lessons/${lessonId}/courses/${courseId}`),
     createFromLesson: (body) => apiCall("POST", "/courses/from-lesson", body),
@@ -770,7 +772,7 @@ function TechniqueTagPicker({ scopeType, scopeId, techniques }) {
                 style: {
                     fontSize: 12, padding: "5px 10px", borderRadius: 20,
                     border: `1px solid ${on ? C.brass : C.line}`,
-                    background: on ? C.brass + "22" : "transparent",
+                    background: on ? alpha(C.brass, "22") : "transparent",
                     color: on ? C.brass : C.inkDim,
                     cursor: inherited ? "default" : "pointer",
                     opacity: inherited ? 0.65 : 1,
@@ -1138,7 +1140,7 @@ function UtilitiesNavItem({ tab, setTab }) {
             onClick: () => { setTab(u.id); setOpen(false); },
             style: {
                 display: "block", width: "100%", textAlign: "left", padding: "10px 14px", border: "none",
-                background: tab === u.id ? C.brass + "22" : "transparent", color: tab === u.id ? C.brass : C.ink,
+                background: tab === u.id ? alpha(C.brass, "22") : "transparent", color: tab === u.id ? C.brass : C.ink,
                 fontFamily: FONT_BODY, fontSize: 13, cursor: "pointer",
             },
         }, u.label))));
@@ -2906,7 +2908,7 @@ function SessionsTab({ data, sessions, setSessions, plans, setPlans, coursesInde
                                 padding: "5px 10px",
                                 borderRadius: 20,
                                 border: `1px solid ${on ? C.brass : C.line}`,
-                                background: on ? C.brass + "22" : "transparent",
+                                background: on ? alpha(C.brass, "22") : "transparent",
                                 color: on ? C.brass : C.inkDim,
                                 cursor: "pointer",
                             } }, t.name));
@@ -2920,7 +2922,7 @@ function SessionsTab({ data, sessions, setSessions, plans, setPlans, coursesInde
                                 padding: "5px 10px",
                                 borderRadius: 20,
                                 border: `1px solid ${on ? C.brass : C.line}`,
-                                background: on ? C.brass + "22" : "transparent",
+                                background: on ? alpha(C.brass, "22") : "transparent",
                                 color: on ? C.brass : C.inkDim,
                                 cursor: "pointer",
                             } },
@@ -3078,7 +3080,7 @@ function SprintsTab({ sessions, setSessions, sprints, setSprints, coursesIndex, 
                     type: "button", key: c.id || "general", onClick: () => setSelectedCourseId(c.id),
                     style: {
                         fontSize: 12.5, padding: "6px 12px", borderRadius: 20,
-                        border: `1px solid ${on ? C.brass : C.line}`, background: on ? C.brass + "22" : "transparent",
+                        border: `1px solid ${on ? C.brass : C.line}`, background: on ? alpha(C.brass, "22") : "transparent",
                         color: on ? C.brass : C.inkDim, cursor: "pointer",
                     },
                 }, c.name);
@@ -3269,7 +3271,7 @@ function SprintsTab({ sessions, setSessions, sprints, setSprints, coursesIndex, 
                     return E("button", {
                         type: "button", key: l.lessonId,
                         onClick: () => setItemForm({ ...itemForm, lessonRef: on ? null : { courseId: l.courseId, lessonId: l.lessonId, label: `${l.title} (${l.courseName})` } }),
-                        style: { fontSize: 12, padding: "5px 10px", borderRadius: 20, border: `1px solid ${on ? C.brass : C.line}`, background: on ? C.brass + "22" : "transparent", color: on ? C.brass : C.inkDim, cursor: "pointer" },
+                        style: { fontSize: 12, padding: "5px 10px", borderRadius: 20, border: `1px solid ${on ? C.brass : C.line}`, background: on ? alpha(C.brass, "22") : "transparent", color: on ? C.brass : C.inkDim, cursor: "pointer" },
                     }, l.title, " ", E("span", { style: { color: C.inkFaint } }, "· ", l.courseName));
                 }))),
             E("div", { style: { display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8 } },
@@ -3593,7 +3595,7 @@ function TopicsTab({ topics, setTopics, me }) {
                         borderRadius: 20,
                         textTransform: "capitalize",
                         border: `1px solid ${form.type === ty ? C.brass : C.line}`,
-                        background: form.type === ty ? C.brass + "22" : "transparent",
+                        background: form.type === ty ? alpha(C.brass, "22") : "transparent",
                         color: form.type === ty ? C.brass : C.inkDim,
                         cursor: "pointer",
                     } }, ty)))),
@@ -3759,7 +3761,7 @@ function TrainerTab() {
                 padding: "7px 12px",
                 borderRadius: 20,
                 border: `1px solid ${sub === s.id ? C.brass : C.line}`,
-                background: sub === s.id ? C.brass + "22" : "transparent",
+                background: sub === s.id ? alpha(C.brass, "22") : "transparent",
                 color: sub === s.id ? C.brass : C.inkDim,
                 cursor: "pointer",
             } }, s.label)))),
@@ -3861,7 +3863,7 @@ function IntervalTrainer() {
         React.createElement("div", { style: { display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8, marginBottom: 14 } }, choices.map((c) => {
             let bg = "transparent", bc = C.line, tc = C.ink;
             if (feedback && c === q.answer) {
-                bg = C.sage + "22";
+                bg = alpha(C.sage, "22");
                 bc = C.sage;
                 tc = C.sage;
             }
@@ -3935,7 +3937,7 @@ function NoteQuiz() {
         React.createElement("div", { style: { display: "grid", gridTemplateColumns: "repeat(4,1fr)", gap: 8, margin: "14px 0" } }, choices.map((c) => {
             let bg = "transparent", bc = C.line, tc = C.ink;
             if (feedback && c === q.answer) {
-                bg = C.sage + "22";
+                bg = alpha(C.sage, "22");
                 bc = C.sage;
                 tc = C.sage;
             }
@@ -4716,7 +4718,7 @@ function LessonReader({ course, lessonMeta, lessonContent, notes, setNotes, onBa
                         type: "button", key: c.id, onClick: () => toggleCourseLink(c.id),
                         style: {
                             fontSize: 12, padding: "5px 10px", borderRadius: 20,
-                            border: `1px solid ${on ? C.brass : C.line}`, background: on ? C.brass + "22" : "transparent",
+                            border: `1px solid ${on ? C.brass : C.line}`, background: on ? alpha(C.brass, "22") : "transparent",
                             color: on ? C.brass : C.inkDim, cursor: "pointer",
                         },
                     }, c.name);
@@ -5148,7 +5150,7 @@ function HitTheNoteTrainer() {
                     width: 26,
                     height: 26,
                     borderRadius: 5,
-                    background: r.correct ? C.sage + "33" : C.rust + "33",
+                    background: r.correct ? alpha(C.sage, "33") : alpha(C.rust, "33"),
                     border: `1px solid ${r.correct ? C.sage : C.rust}`,
                     color: r.correct ? C.sage : C.rust,
                     fontFamily: FONT_MONO,
@@ -5822,7 +5824,7 @@ function IntervalCheckboxGrid({ selected, onToggle }) {
                     display: "flex", alignItems: "center", justifyContent: "center", gap: 5,
                     padding: "7px 4px", borderRadius: 6, cursor: isRoot ? "default" : "pointer",
                     border: `1px solid ${checked ? C.brass : C.line}`,
-                    background: checked ? C.brass + "22" : "transparent",
+                    background: checked ? alpha(C.brass, "22") : "transparent",
                     fontFamily: FONT_MONO, fontSize: 12, color: checked ? C.brass : C.inkDim,
                     opacity: isRoot ? 0.85 : 1,
                 },
