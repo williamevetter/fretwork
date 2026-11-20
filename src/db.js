@@ -428,6 +428,12 @@ No racist, sexist, or religious slurs — ZERO TOLERANCE.', '${new Date().toISOS
 
   ALTER TABLE users ADD COLUMN notify_new_message INTEGER NOT NULL DEFAULT 1;
   `,
+  // Interface preferences: theme ('dark'|'light') and ui_mode ('auto'|'computer'|
+  // 'phone'|'tablet', overriding real-screen-width auto-detection when not 'auto').
+  `
+  ALTER TABLE users ADD COLUMN theme TEXT NOT NULL DEFAULT 'dark';
+  ALTER TABLE users ADD COLUMN ui_mode TEXT NOT NULL DEFAULT 'auto';
+  `,
 ];
 
 function runMigrations() {

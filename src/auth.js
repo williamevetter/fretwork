@@ -48,6 +48,7 @@ function rowToUser(row) {
       gearReminders: !!row.notify_gear_reminders,
     },
     gearReminderDays: row.gear_reminder_days,
+    theme: row.theme, uiMode: row.ui_mode,
   };
 }
 
@@ -129,10 +130,10 @@ router.post("/logout", (req, res) => {
 router.get("/me", requireAuth, (req, res) => {
   const user = db.prepare("SELECT * FROM users WHERE id = ?").get(req.user.id);
   if (!user) return res.status(401).json({ error: "Not found." });
-  const { notifyPrefs, gearReminderDays, name } = rowToUser(user);
+  const { notifyPrefs, gearReminderDays, name, theme, uiMode } = rowToUser(user);
   const statement = db.prepare("SELECT version FROM acceptance_statement WHERE id = 1").get();
   res.json({
-    email: user.email, name, notifyPrefs, gearReminderDays,
+    email: user.email, name, notifyPrefs, gearReminderDays, theme, uiMode,
     isAdmin: !!user.is_admin, role: user.role, impersonatedBy: req.user.impersonatedBy, lastLoginAt: user.last_login_at,
     mustChangePassword: !!user.must_change_password,
     needsAcceptance: user.accepted_statement_version < statement.version,
@@ -210,10 +211,12 @@ router.put("/account/prefs", requireAuth, (req, res) => {
   const gearReminders = prefs.gearReminders !== undefined ? !!prefs.gearReminders : !!user.notify_gear_reminders;
   const gearReminderDays = req.body.gearReminderDays ? Number(req.body.gearReminderDays) : user.gear_reminder_days;
   const name = req.body.name !== undefined ? String(req.body.name).trim() : user.name;
+  const theme = ["dark", "light"].includes(req.body.theme) ? req.body.theme : user.theme;
+  const uiMode = ["auto", "computer", "phone", "tablet"].includes(req.body.uiMode) ? req.body.uiMode : user.ui_mode;
   db.prepare(`
-    UPDATE users SET notify_practice_reminders = ?, notify_weekly_summary = ?, notify_gear_reminders = ?, gear_reminder_days = ?, name = ?
+    UPDATE users SET notify_practice_reminders = ?, notify_weekly_summary = ?, notify_gear_reminders = ?, gear_reminder_days = ?, name = ?, theme = ?, ui_mode = ?
     WHERE id = ?
-  `).run(practiceReminders ? 1 : 0, weeklySummary ? 1 : 0, gearReminders ? 1 : 0, gearReminderDays, name, req.user.id);
+  `).run(practiceReminders ? 1 : 0, weeklySummary ? 1 : 0, gearReminders ? 1 : 0, gearReminderDays, name, theme, uiMode, req.user.id);
   res.json({ ok: true });
 });
 

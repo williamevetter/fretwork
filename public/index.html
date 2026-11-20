@@ -6,7 +6,17 @@
 <title>Fretwork — Guitar Practice Tracker</title>
 <meta name="description" content="Practice log, planner, technique tracker, course material reader, and ear/theory trainers for guitar." />
 <style>
-  html, body { margin: 0; padding: 0; background: #17140F; }
+  :root, [data-theme="dark"] {
+    --c-bg: #17140F; --c-bg2: #1F1B15; --c-surface: #241F18; --c-surfaceRaised: #2C261D;
+    --c-line: #3A3226; --c-ink: #EDE4D3; --c-inkDim: #B7AB94; --c-inkFaint: #7C7261;
+    --c-brass: #C8963E; --c-brassDim: #8F6C31; --c-string: #9AA7B4; --c-sage: #7C9873; --c-rust: #B25B45;
+  }
+  [data-theme="light"] {
+    --c-bg: #F7F2E7; --c-bg2: #EFE7D6; --c-surface: #FFFFFF; --c-surfaceRaised: #FFFDF8;
+    --c-line: #D9CCB0; --c-ink: #2B2316; --c-inkDim: #5C5240; --c-inkFaint: #8C8268;
+    --c-brass: #9C6F22; --c-brassDim: #B9893A; --c-string: #4C6478; --c-sage: #4F7A49; --c-rust: #A14A36;
+  }
+  html, body { margin: 0; padding: 0; background: var(--c-bg); }
   #root { min-height: 100vh; }
 </style>
 <script src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
@@ -188,24 +198,49 @@ const E = React.createElement;
    brass/amber hardware accent, bone-white inlay text,
    string-silver secondary.
 --------------------------------------------------------- */
+// Every value is a CSS variable reference, not a literal hex — switching themes is
+// just changing the [data-theme] attribute on <html> (see ThemeEffect); the browser
+// repaints every C.xxx usage across the whole app with zero React re-render needed.
 const C = {
-    bg: "#17140F",
-    bg2: "#1F1B15",
-    surface: "#241F18",
-    surfaceRaised: "#2C261D",
-    line: "#3A3226",
-    ink: "#EDE4D3",
-    inkDim: "#B7AB94",
-    inkFaint: "#7C7261",
-    brass: "#C8963E",
-    brassDim: "#8F6C31",
-    string: "#9AA7B4",
-    sage: "#7C9873",
-    rust: "#B25B45",
+    bg: "var(--c-bg)",
+    bg2: "var(--c-bg2)",
+    surface: "var(--c-surface)",
+    surfaceRaised: "var(--c-surfaceRaised)",
+    line: "var(--c-line)",
+    ink: "var(--c-ink)",
+    inkDim: "var(--c-inkDim)",
+    inkFaint: "var(--c-inkFaint)",
+    brass: "var(--c-brass)",
+    brassDim: "var(--c-brassDim)",
+    string: "var(--c-string)",
+    sage: "var(--c-sage)",
+    rust: "var(--c-rust)",
 };
+// C's values are all var(...) references now, so the old `${C.xxx}66` hex-alpha-suffix
+// trick is invalid CSS (you can't append hex digits after a var() call) -- this is the
+// replacement: color-mix() computes the same translucency from the CSS variable directly.
+function alpha(cssVar, hex) {
+    const pct = Math.round((parseInt(hex, 16) / 255) * 100);
+    return `color-mix(in srgb, ${cssVar} ${pct}%, transparent)`;
+}
 const FONT_DISPLAY = "'Fraunces', Georgia, 'Times New Roman', serif";
 const FONT_BODY = "'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif";
 const FONT_MONO = "'JetBrains Mono', 'SF Mono', Consolas, monospace";
+// Auto-detects phone/tablet/computer from viewport width, unless the account has
+// forced a specific one (anything other than "auto") — same breakpoints either way,
+// so forced and auto-detected modes are visually identical, never two code paths.
+function useUiMode(preference) {
+    const [width, setWidth] = useState(window.innerWidth);
+    useEffect(() => {
+        const onResize = () => setWidth(window.innerWidth);
+        window.addEventListener("resize", onResize);
+        return () => window.removeEventListener("resize", onResize);
+    }, []);
+    if (preference && preference !== "auto") return preference;
+    if (width < 700) return "phone";
+    if (width < 1024) return "tablet";
+    return "computer";
+}
 function useGoogleFonts() {
     useEffect(() => {
         const id = "gpt-fonts";
@@ -653,7 +688,7 @@ function Btn({ children, onClick, variant = "primary", style, disabled, type = "
     const variants = {
         primary: { background: C.brass, color: "#1A1509", border: `1px solid ${C.brass}` },
         ghost: { background: "transparent", color: C.ink, border: `1px solid ${C.line}` },
-        danger: { background: "transparent", color: C.rust, border: `1px solid ${C.rust}55` },
+        danger: { background: "transparent", color: C.rust, border: `1px solid ${alpha(C.rust, "55")}` },
     };
     return (React.createElement("button", { type: type, onClick: disabled ? undefined : onClick, disabled: disabled, onMouseEnter: (e) => (e.currentTarget.style.filter = "brightness(1.12)"), onMouseLeave: (e) => (e.currentTarget.style.filter = "none"), style: { ...base, ...variants[variant], ...style } }, children));
 }
@@ -1021,11 +1056,10 @@ const TABS = [
     { id: "recordings", label: "Recordings" },
     { id: "sprints", label: "Sprints" },
     { id: "calendar", label: "Calendar" },
-    { id: "techniques", label: "Techniques" },
     { id: "topics", label: "Topics & Questions" },
     { id: "forums", label: "Forums" },
     { id: "messages", label: "Messages" },
-    { id: "courses", label: "Course Material" },
+    { id: "courses", label: "Course Material & Techniques" },
     { id: "gear", label: "Gear" },
     { id: "theory", label: "Theory" },
     { id: "trainer", label: "Trainer" },
@@ -1532,13 +1566,18 @@ function App({ me }) {
         } },
         React.createElement("style", null, `
         * { box-sizing: border-box; }
-        ::selection { background: ${C.brass}55; }
+        ::selection { background: ${alpha(C.brass, "55")}; }
         input:focus, select:focus, textarea:focus, button:focus-visible {
           outline: 2px solid ${C.brass}; outline-offset: 1px;
         }
         @media (prefers-reduced-motion: reduce) { * { transition: none !important; } }
+        [data-ui-mode="phone"] .fw-header { padding: 14px 12px 10px !important; }
+        [data-ui-mode="phone"] .fw-nav { padding: 6px 8px !important; }
+        [data-ui-mode="phone"] .fw-nav button { font-size: 12px !important; padding: 6px 9px !important; }
+        [data-ui-mode="phone"] .fw-main { padding: 10px !important; max-width: 100% !important; }
+        [data-ui-mode="tablet"] .fw-main { max-width: 100% !important; padding: 14px !important; }
       `),
-        React.createElement("header", { style: {
+        React.createElement("header", { className: "fw-header", style: {
                 padding: "22px 18px 16px",
                 borderBottom: `1px solid ${C.line}`,
                 background: `linear-gradient(180deg, ${C.bg2}, ${C.bg})`,
@@ -1553,7 +1592,7 @@ function App({ me }) {
                         letterSpacing: "-0.01em",
                     } }, "Fretwork")),
             React.createElement("div", { style: { fontFamily: FONT_MONO, fontSize: 11.5, color: C.inkFaint, marginTop: 4, marginLeft: 20 } }, "practice log & theory bench")),
-        React.createElement("nav", { style: {
+        React.createElement("nav", { className: "fw-nav", style: {
                 display: "flex",
                 gap: 4,
                 padding: "10px 12px",
@@ -1591,19 +1630,21 @@ function App({ me }) {
                     color: tab === "admin" ? "#1A1509" : C.inkDim, background: tab === "admin" ? C.brass : "transparent",
                 },
             }, "Admin")),
-        React.createElement("main", { style: { padding: 16, maxWidth: 900, margin: "0 auto" } },
+        React.createElement("main", { className: "fw-main", style: { padding: 16, maxWidth: 900, margin: "0 auto" } },
             tab === "dashboard" && React.createElement(Dashboard, { data: data, setTab: setTab, sprints: sprints, coursesIndex: coursesIndex }),
             tab === "sessions" && (React.createElement(SessionsTab, { data: data, sessions: sessions, setSessions: setSessions, plans: plans, setPlans: setPlans, coursesIndex: coursesIndex, sprints: sprints, editSessionId: editSessionId, setEditSessionId: setEditSessionId })),
             tab === "search" && E(SessionsSearchTab, { sessions: sessions, techniques: techniques, sprints: sprints, onEditSession: (id) => { setEditSessionId(id); setTab("sessions"); } }),
             tab === "recordings" && E(RecordingsTab, { sessions: sessions, setSessions: setSessions, sprints: sprints }),
             tab === "sprints" && E(SprintsTab, { sessions: sessions, setSessions: setSessions, sprints: sprints, setSprints: setSprints, coursesIndex: coursesIndex, setTab: setTab, techniques: techniques }),
             tab === "calendar" && E(CalendarTab, { sessions: sessions, sprints: sprints, coursesIndex: coursesIndex, onEditSession: (id) => { setEditSessionId(id); setTab("sessions"); } }),
-            tab === "techniques" && React.createElement(TechniquesTab, { sessions: sessions, techniques: techniques, setTechniques: setTechniques }),
             tab === "topics" && React.createElement(TopicsTab, { topics: topics, setTopics: setTopics, me: me }),
             tab === "forums" && E(ForumsTab, null),
             tab === "messages" && E(MessagesTab, null),
             tab === "instructor" && me && me.role === "instructor" && E(InstructorTab, null),
-            tab === "courses" && (React.createElement(CourseMaterialTab, { coursesIndex: coursesIndex, setCoursesIndex: setCoursesIndex, notes: notes, setNotes: setNotes, techniques: techniques })),
+            tab === "courses" && E(CourseMaterialAndTechniquesTab, {
+                coursesIndex: coursesIndex, setCoursesIndex: setCoursesIndex, notes: notes, setNotes: setNotes,
+                sessions: sessions, techniques: techniques, setTechniques: setTechniques,
+            }),
             tab === "gear" && React.createElement(GearTab, { gear: gear, setGear: setGear }),
             tab === "theory" && React.createElement(TheoryTab, { theory: theory, setTheory: setTheory }),
             tab === "trainer" && React.createElement(TrainerTab, null),
@@ -1740,7 +1781,7 @@ function AdminDashboardTab({ me }) {
                         E("td", { style: { padding: "8px 10px" } },
                             editingId === u.id ? E("div", { style: { display: "flex", gap: 6 } },
                                 E("input", { value: editEmailDraft, onChange: (e) => setEditEmailDraft(e.target.value), style: { fontSize: 11.5, padding: "3px 6px", borderRadius: 5, border: `1px solid ${C.line}`, background: C.bg2, color: C.ink } }),
-                                E("button", { onClick: () => saveEdit(u), style: { background: "transparent", border: `1px solid ${C.sage}66`, color: C.sage, borderRadius: 5, padding: "3px 8px", cursor: "pointer", fontSize: 11 } }, "Save"),
+                                E("button", { onClick: () => saveEdit(u), style: { background: "transparent", border: `1px solid ${alpha(C.sage, "66")}`, color: C.sage, borderRadius: 5, padding: "3px 8px", cursor: "pointer", fontSize: 11 } }, "Save"),
                                 E("button", { onClick: cancelEdit, style: { background: "transparent", border: `1px solid ${C.line}`, color: C.inkFaint, borderRadius: 5, padding: "3px 8px", cursor: "pointer", fontSize: 11 } }, "Cancel")) :
                                 E("span", null, u.email, u.isAdmin && E("span", { style: { marginLeft: 6, fontSize: 10, color: C.brass, fontFamily: FONT_MONO } }, "ADMIN"),
                                     u.mustChangePassword && E("span", { style: { marginLeft: 6, fontSize: 10, color: C.rust, fontFamily: FONT_MONO } }, "MUST CHANGE PW"))),
@@ -1755,11 +1796,11 @@ function AdminDashboardTab({ me }) {
                         E("td", { style: { padding: "8px 10px", minWidth: 240 } },
                             !canAct(u) ? E("span", { style: { color: C.inkFaint, fontSize: 11.5 } }, u.isAdmin ? "—" : "out of scope") : E("div", { style: { display: "flex", flexDirection: "column", gap: 6 } },
                                 E("div", { style: { display: "flex", gap: 6, flexWrap: "wrap" } },
-                                    E("button", { onClick: () => impersonate(u), style: { background: "transparent", border: `1px solid ${C.brass}66`, color: C.brass, borderRadius: 5, padding: "3px 8px", cursor: "pointer", fontSize: 11 } }, "Impersonate"),
+                                    E("button", { onClick: () => impersonate(u), style: { background: "transparent", border: `1px solid ${alpha(C.brass, "66")}`, color: C.brass, borderRadius: 5, padding: "3px 8px", cursor: "pointer", fontSize: 11 } }, "Impersonate"),
                                     E("button", { onClick: () => startEdit(u), style: { background: "transparent", border: `1px solid ${C.line}`, color: C.inkDim, borderRadius: 5, padding: "3px 8px", cursor: "pointer", fontSize: 11 } }, "Edit"),
-                                    E("button", { onClick: () => resetPassword(u), style: { background: "transparent", border: `1px solid ${C.rust}66`, color: C.rust, borderRadius: 5, padding: "3px 8px", cursor: "pointer", fontSize: 11 } }, "Reset password"),
-                                    E("button", { onClick: () => requirePasswordChange(u), style: { background: "transparent", border: `1px solid ${C.rust}66`, color: C.rust, borderRadius: 5, padding: "3px 8px", cursor: "pointer", fontSize: 11 } }, "Force PW change"),
-                                    !isTestAdmin && (u.role === "user" || u.role === "instructor") && E("button", { onClick: () => toggleInstructor(u), style: { background: "transparent", border: `1px solid ${C.string}66`, color: C.string, borderRadius: 5, padding: "3px 8px", cursor: "pointer", fontSize: 11 } }, u.role === "instructor" ? "Demote from instructor" : "Make instructor"),
+                                    E("button", { onClick: () => resetPassword(u), style: { background: "transparent", border: `1px solid ${alpha(C.rust, "66")}`, color: C.rust, borderRadius: 5, padding: "3px 8px", cursor: "pointer", fontSize: 11 } }, "Reset password"),
+                                    E("button", { onClick: () => requirePasswordChange(u), style: { background: "transparent", border: `1px solid ${alpha(C.rust, "66")}`, color: C.rust, borderRadius: 5, padding: "3px 8px", cursor: "pointer", fontSize: 11 } }, "Force PW change"),
+                                    !isTestAdmin && (u.role === "user" || u.role === "instructor") && E("button", { onClick: () => toggleInstructor(u), style: { background: "transparent", border: `1px solid ${alpha(C.string, "66")}`, color: C.string, borderRadius: 5, padding: "3px 8px", cursor: "pointer", fontSize: 11 } }, u.role === "instructor" ? "Demote from instructor" : "Make instructor"),
                                     E("button", { onClick: () => deleteUser(u), style: { background: C.rust, border: "none", color: "#1A1509", borderRadius: 5, padding: "3px 8px", cursor: "pointer", fontSize: 11, fontWeight: 700 } }, "Delete")),
                                 flashMsgs[u.id] && E("div", { style: { fontSize: 11, color: C.sage } }, flashMsgs[u.id]),
                                 resetResults[u.id] && E("div", { style: { fontFamily: FONT_MONO, fontSize: 11, background: C.bg2, border: `1px solid ${C.line}`, borderRadius: 5, padding: "4px 6px", userSelect: "all" } }, resetResults[u.id]),
@@ -2651,7 +2692,7 @@ function SessionsTab({ data, sessions, setSessions, plans, setPlans, coursesInde
                 E("div", { style: { display: "flex", justifyContent: "space-between", alignItems: "start", gap: 10 } },
                     E("div", { style: { flex: 1, minWidth: 0 } },
                         E("div", { style: { display: "flex", gap: 6, alignItems: "baseline", flexWrap: "wrap" } },
-                            b.important && E("span", { style: { fontSize: 10, fontWeight: 700, color: C.rust, border: `1px solid ${C.rust}66`, borderRadius: 4, padding: "0 5px" } }, "IMPORTANT"),
+                            b.important && E("span", { style: { fontSize: 10, fontWeight: 700, color: C.rust, border: `1px solid ${alpha(C.rust, "66")}`, borderRadius: 4, padding: "0 5px" } }, "IMPORTANT"),
                             E("span", { style: { fontSize: 11, fontFamily: FONT_MONO, color: C.inkFaint, textTransform: "uppercase" } }, b.category),
                             E("span", { style: { fontSize: 14.5, fontWeight: 600, textDecoration: b.completed ? "line-through" : "none" } }, b.material)),
                         b.techniqueId && E("span", { style: { fontSize: 11.5, color: C.inkFaint } },
@@ -3120,7 +3161,7 @@ function SprintsTab({ sessions, setSessions, sprints, setSprints, coursesIndex, 
         E("input", { type: "checkbox", checked: item.completed, onChange: () => toggleItemCompleted(item.id), style: { marginTop: 3 }, title: "Mastered" }),
         E("div", { style: { flex: 1, minWidth: 0 } },
             E("div", { style: { display: "flex", gap: 6, alignItems: "baseline", flexWrap: "wrap" } },
-                item.important && E("span", { style: { fontSize: 10, fontWeight: 700, color: C.rust, border: `1px solid ${C.rust}66`, borderRadius: 4, padding: "0 5px" } }, "IMPORTANT"),
+                item.important && E("span", { style: { fontSize: 10, fontWeight: 700, color: C.rust, border: `1px solid ${alpha(C.rust, "66")}`, borderRadius: 4, padding: "0 5px" } }, "IMPORTANT"),
                 E("span", { style: { fontSize: 13.5, textDecoration: item.completed ? "line-through" : "none" } }, item.title),
                 item.carriedFromQueueItemId && E("span", { style: { fontSize: 10, color: C.inkFaint } }, "(carried over)")),
             refSummary(item.ref) && E("div", { style: { fontSize: 11.5, color: C.brassDim, marginTop: 2 } }, refSummary(item.ref)),
@@ -3292,7 +3333,7 @@ function CalendarTab({ sessions, sprints, coursesIndex, onEditSession }) {
                         style: {
                             minHeight: 58, borderRadius: 6, padding: 5, cursor: "pointer",
                             border: `1px solid ${isSelected ? C.brass : C.line}`,
-                            background: isToday ? `${C.brass}22` : (info.sprintsOnDay.length ? `${C.string}1A` : C.bg2),
+                            background: isToday ? alpha(C.brass, "22") : (info.sprintsOnDay.length ? alpha(C.string, "1A") : C.bg2),
                         },
                     },
                         E("div", { style: { fontFamily: FONT_MONO, fontSize: 11, color: isToday ? C.brass : C.inkDim } }, d),
@@ -3985,7 +4026,7 @@ function InstructorTab() {
                         E("div", { style: { fontSize: 11.5, color: C.inkFaint } }, s.email)),
                     E("div", { style: { display: "flex", gap: 6, alignItems: "center" } },
                         resetResults[s.id] && E("span", { style: { fontSize: 11, color: C.sage } }, resetResults[s.id]),
-                        E("button", { onClick: () => resetPw(s), style: { background: "transparent", border: `1px solid ${C.rust}66`, color: C.rust, borderRadius: 5, padding: "3px 8px", cursor: "pointer", fontSize: 11 } }, "Reset password"),
+                        E("button", { onClick: () => resetPw(s), style: { background: "transparent", border: `1px solid ${alpha(C.rust, "66")}`, color: C.rust, borderRadius: 5, padding: "3px 8px", cursor: "pointer", fontSize: 11 } }, "Reset password"),
                         E("button", { onClick: () => unenroll(s), style: { background: "transparent", border: `1px solid ${C.line}`, color: C.inkFaint, borderRadius: 5, padding: "3px 8px", cursor: "pointer", fontSize: 11 } }, "Unenroll")))))));
 }
 /* ---------------------------------------------------------
@@ -4131,6 +4172,19 @@ function MessagesTab() {
                             m.direction === "sent" ? "To " : "From ", m.otherParty, " · ", E("span", { style: { color: C.inkFaint, fontWeight: 400 } }, m.category)),
                         E("div", { style: { fontSize: 12.5, color: C.inkDim, marginTop: 2 } }, m.body)),
                     E("div", { style: { fontSize: 10.5, color: C.inkFaint, flexShrink: 0, marginLeft: 10 } }, (m.createdAt || "").slice(0, 10)))))));
+}
+/* ---------------------------------------------------------
+   COURSE MATERIAL & TECHNIQUES — one nav entry, two fully separate entities
+   underneath (no data merge, just a shared sub-tab switcher).
+--------------------------------------------------------- */
+function CourseMaterialAndTechniquesTab({ coursesIndex, setCoursesIndex, notes, setNotes, sessions, techniques, setTechniques }) {
+    const [view, setView] = useState("material"); // material | techniques
+    return E("div", { style: { display: "grid", gap: 14 } },
+        E("div", { style: { display: "flex", gap: 8 } },
+            E(Btn, { variant: view === "material" ? "primary" : "ghost", onClick: () => setView("material") }, "Course Material"),
+            E(Btn, { variant: view === "techniques" ? "primary" : "ghost", onClick: () => setView("techniques") }, "Techniques")),
+        view === "material" && E(CourseMaterialTab, { coursesIndex: coursesIndex, setCoursesIndex: setCoursesIndex, notes: notes, setNotes: setNotes, techniques: techniques }),
+        view === "techniques" && E(TechniquesTab, { sessions: sessions, techniques: techniques, setTechniques: setTechniques }));
 }
 /* ---------------------------------------------------------
    COURSE MATERIAL — courses, uploaded lessons, reader, notes index
@@ -4518,7 +4572,7 @@ function LessonReader({ course, lessonMeta, lessonContent, notes, setNotes, onBa
                                 fontFamily: FONT_MONO,
                                 fontSize: 10.5,
                                 color: C.brass,
-                                border: `1px solid ${C.brass}66`,
+                                border: `1px solid ${alpha(C.brass, "66")}`,
                                 borderRadius: 4,
                                 padding: "1px 6px",
                                 marginRight: 8,
@@ -5115,6 +5169,9 @@ function AuthedShell({ me, onLogout, onPrefsSaved }) {
     const [showChangelog, setShowChangelog] = useState(false);
     const [appVersion, setAppVersion] = useState("");
     useEffect(() => { api.changelog().then((d) => setAppVersion(d.currentVersion || "")).catch(() => {}); }, []);
+    const uiMode = useUiMode(me.uiMode);
+    useEffect(() => { document.documentElement.setAttribute("data-theme", me.theme || "dark"); }, [me.theme]);
+    useEffect(() => { document.documentElement.setAttribute("data-ui-mode", uiMode); }, [uiMode]);
     const exitImpersonation = async () => {
         await fetch("/api/auth/stop-impersonating", { method: "POST", credentials: "include" });
         onPrefsSaved();
@@ -5257,6 +5314,8 @@ function AccountModal({ me, onClose, onSaved }) {
     const [name, setName] = useState(me.name || "");
     const [prefs, setPrefs] = useState(me.notifyPrefs || { practiceReminders: true, weeklySummary: true, gearReminders: true });
     const [gearDays, setGearDays] = useState(me.gearReminderDays || 90);
+    const [theme, setTheme] = useState(me.theme || "dark");
+    const [uiMode, setUiMode] = useState(me.uiMode || "auto");
     const [pw, setPw] = useState({ currentPassword: "", newPassword: "" });
     const [msg, setMsg] = useState(null);
     const [busy, setBusy] = useState(false);
@@ -5267,7 +5326,7 @@ function AccountModal({ me, onClose, onSaved }) {
             method: "PUT",
             credentials: "include",
             headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ name, notifyPrefs: prefs, gearReminderDays: gearDays }),
+            body: JSON.stringify({ name, notifyPrefs: prefs, gearReminderDays: gearDays, theme, uiMode }),
         });
         setMsg(res.ok ? { type: "success", text: "Saved." } : { type: "error", text: "Couldn't save." });
         if (res.ok)
@@ -5319,6 +5378,18 @@ function AccountModal({ me, onClose, onSaved }) {
                 React.createElement("div", { style: { marginBottom: 14 } },
                     React.createElement(Label, null, "Gear reminder interval (days)"),
                     React.createElement(Input, { type: "number", min: "7", value: gearDays, onChange: (e) => setGearDays(Number(e.target.value)), style: { maxWidth: 120 } })),
+                E("div", { style: { marginBottom: 14, display: "flex", gap: 14 } },
+                    E("div", null,
+                        E(Label, null, "Color scheme"),
+                        E(Select, { value: theme, onChange: (e) => setTheme(e.target.value) },
+                            E("option", { value: "dark" }, "Dark"), E("option", { value: "light" }, "Light"))),
+                    E("div", null,
+                        E(Label, null, "Interface"),
+                        E(Select, { value: uiMode, onChange: (e) => setUiMode(e.target.value) },
+                            E("option", { value: "auto" }, "Auto (by screen size)"),
+                            E("option", { value: "computer" }, "Computer"),
+                            E("option", { value: "tablet" }, "Tablet"),
+                            E("option", { value: "phone" }, "Phone")))),
                 React.createElement(Btn, { variant: "ghost", onClick: savePrefs, disabled: busy }, "Save preferences"),
                 React.createElement("div", { style: { borderTop: `1px solid ${C.line}`, margin: "18px 0 14px" } }),
                 React.createElement(Label, null, "Change password"),
