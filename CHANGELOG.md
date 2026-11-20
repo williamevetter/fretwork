@@ -156,3 +156,8 @@ Each Active Sprint card on the Dashboard now shows that sprint's own Total pract
 *Minor*
 
 v13's CSS-variable conversion missed a second form of the old hex-alpha-suffix trick (`C.brass + "22"`, not just the `${C.brass}66` template-literal form that got fixed at the time), silently breaking the selected/active background on every chip picker, tab, and toggle using it — 14 spots across technique tags, plan-form pickers, quiz answers, and more. Fixed the same way as before: `color-mix()` via the existing `alpha()` helper.
+
+## v16 — Multi-technique/material blocks, technique & lesson rename, per-course breakdown
+*Major*
+
+A session block can now cover several techniques and/or course materials at once, sharing one timer — a "Use session timer for all techniques/materials" checkbox toggles the picker between single-select and multi-select chips, in both the live session block form and the Plan form's block editor. The full elapsed minutes credit every linked technique (not split). Added rename for techniques (previously add/remove only) and uploaded course materials (previously upload/delete only), plus a per-course Technique Breakdown pie. Scoped from issue #15's broader hierarchy discussion — most of the Course → Sprint → Session hierarchy it asked about already existed; this is the genuinely new pieces confirmed in discussion.
