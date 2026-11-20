@@ -13,10 +13,43 @@ if (!fs.existsSync(RECORDINGS_DIR)) fs.mkdirSync(RECORDINGS_DIR, { recursive: tr
 const router = express.Router();
 router.use(requireAuth);
 
-function blockRow(row) {
+// A block can now cover several techniques and/or course materials at once,
+// sharing one timer (issue #15) — session_blocks.technique_id stays in the schema
+// (legacy, unused going forward) but linkage lives in the two join tables below.
+function techniqueIdsForBlocks(blockIds) {
+  if (!blockIds.length) return {};
+  const placeholders = blockIds.map(() => "?").join(",");
+  const rows = db.prepare(`SELECT block_id, technique_id FROM session_block_techniques WHERE block_id IN (${placeholders})`).all(...blockIds);
+  const map = {};
+  rows.forEach((r) => { (map[r.block_id] = map[r.block_id] || []).push(r.technique_id); });
+  return map;
+}
+function lessonIdsForBlocks(blockIds) {
+  if (!blockIds.length) return {};
+  const placeholders = blockIds.map(() => "?").join(",");
+  const rows = db.prepare(`SELECT block_id, lesson_id FROM session_block_lessons WHERE block_id IN (${placeholders})`).all(...blockIds);
+  const map = {};
+  rows.forEach((r) => { (map[r.block_id] = map[r.block_id] || []).push(r.lesson_id); });
+  return map;
+}
+// Overwrites a block's linked techniques/lessons wholesale (delete-then-reinsert) —
+// same "replace, don't diff" idiom already used elsewhere in this app (focus_days_json
+// etc.) rather than computing an add/remove delta.
+function setBlockTechniques(blockId, techniqueIds) {
+  db.prepare("DELETE FROM session_block_techniques WHERE block_id = ?").run(blockId);
+  const insert = db.prepare("INSERT INTO session_block_techniques (block_id, technique_id) VALUES (?, ?)");
+  (techniqueIds || []).forEach((tid) => { if (tid) insert.run(blockId, tid); });
+}
+function setBlockLessons(blockId, lessonIds) {
+  db.prepare("DELETE FROM session_block_lessons WHERE block_id = ?").run(blockId);
+  const insert = db.prepare("INSERT INTO session_block_lessons (block_id, lesson_id) VALUES (?, ?)");
+  (lessonIds || []).forEach((lid) => { if (lid) insert.run(blockId, lid); });
+}
+function blockRow(row, techMap, lessonMap) {
   return {
     id: row.id, queueItemId: row.queue_item_id, material: row.material, category: row.category,
-    techniqueId: row.technique_id, actualMinutes: row.actual_minutes, plannedMinutes: row.planned_minutes,
+    techniqueIds: (techMap && techMap[row.id]) || [], lessonIds: (lessonMap && lessonMap[row.id]) || [],
+    actualMinutes: row.actual_minutes, plannedMinutes: row.planned_minutes,
     completed: !!row.completed, important: !!row.important, ref: row.ref_json ? JSON.parse(row.ref_json) : null,
     notes: row.notes || "", importedEntryId: row.imported_entry_id, createdAt: row.created_at, updatedAt: row.updated_at,
     timerStartedAt: row.timer_started_at || null,
@@ -29,14 +62,25 @@ function recordingRow(row) {
     blockId: row.block_id || null, label: row.label || "",
   };
 }
+// A block's full minutes credit EVERY technique it's linked to (not split N ways) --
+// "I was working on sweep picking and legato together for the whole 10 minutes."
+function techniqueTimesForBlocks(blockRows, techMap) {
+  const techniqueTimes = {};
+  blockRows.forEach((b) => {
+    (techMap[b.id] || []).forEach((tid) => {
+      techniqueTimes[tid] = (techniqueTimes[tid] || 0) + (Number(b.actual_minutes) || 0);
+    });
+  });
+  return techniqueTimes;
+}
 // Queries recordings itself (by row.id) rather than taking them as a parameter —
 // every existing call site stays unchanged, nothing to thread through.
 function sessionWithBlocks(row, blockRows) {
   const duration = blockRows.reduce((s, b) => s + (Number(b.actual_minutes) || 0), 0);
-  const techniqueTimes = {};
-  blockRows.forEach((b) => {
-    if (b.technique_id) techniqueTimes[b.technique_id] = (techniqueTimes[b.technique_id] || 0) + (Number(b.actual_minutes) || 0);
-  });
+  const blockIds = blockRows.map((b) => b.id);
+  const techMap = techniqueIdsForBlocks(blockIds);
+  const lessonMap = lessonIdsForBlocks(blockIds);
+  const techniqueTimes = techniqueTimesForBlocks(blockRows, techMap);
   const recordings = db.prepare("SELECT * FROM audio_recordings WHERE session_id = ? ORDER BY created_at").all(row.id);
   return {
     id: row.id, date: row.date, sprintId: row.sprint_id, notes: row.notes || "", isAdHoc: !!row.is_ad_hoc,
@@ -44,7 +88,7 @@ function sessionWithBlocks(row, blockRows) {
     // "use the block-derived numbers above (duration / per-block plannedMinutes)".
     plannedMinutes: row.planned_minutes != null ? row.planned_minutes : null,
     actualMinutesManual: row.actual_minutes_manual != null ? row.actual_minutes_manual : null,
-    duration, techniqueTimes, blocks: blockRows.map(blockRow), recordings: recordings.map(recordingRow),
+    duration, techniqueTimes, blocks: blockRows.map((b) => blockRow(b, techMap, lessonMap)), recordings: recordings.map(recordingRow),
   };
 }
 
@@ -109,9 +153,12 @@ router.delete("/:id", (req, res) => {
   const recordingFiles = db.prepare("SELECT file_name FROM audio_recordings WHERE session_id = ?").all(row.id);
   db.exec("BEGIN");
   try {
-    // audio_recordings.block_id references session_blocks, so recordings must go
-    // first — deleting blocks while a recording still points at one violates the FK.
+    // audio_recordings.block_id and the two session_block_* join tables all
+    // reference session_blocks, so they must go first — deleting blocks while any
+    // of these still point at one violates the FK.
     db.prepare("DELETE FROM audio_recordings WHERE session_id = ?").run(row.id);
+    db.prepare("DELETE FROM session_block_techniques WHERE block_id IN (SELECT id FROM session_blocks WHERE session_id = ?)").run(row.id);
+    db.prepare("DELETE FROM session_block_lessons WHERE block_id IN (SELECT id FROM session_blocks WHERE session_id = ?)").run(row.id);
     db.prepare("DELETE FROM session_blocks WHERE session_id = ?").run(row.id);
     db.prepare("DELETE FROM technique_assignments WHERE scope_type = 'session' AND scope_id = ?").run(row.id);
     db.prepare("DELETE FROM sessions WHERE id = ?").run(row.id);
@@ -153,11 +200,11 @@ router.post("/:id/recordings", (req, res) => {
 router.post("/:id/blocks", (req, res) => {
   const session = findSessionForUser(req.params.id, req.user.id);
   if (!session) return res.status(404).json({ error: "Not found." });
-  const { queueItemId, material, category, techniqueId, actualMinutes, plannedMinutes, completed, important, ref, notes, timerStartedAt } = req.body || {};
+  const { queueItemId, material, category, techniqueId, techniqueIds, lessonIds, actualMinutes, plannedMinutes, completed, important, ref, notes, timerStartedAt } = req.body || {};
   if (!String(material || "").trim() || !category) return res.status(400).json({ error: "material and category are required." });
   const now = nowISO();
   const row = {
-    id: uid(), session_id: session.id, queue_item_id: queueItemId || null, technique_id: techniqueId || null,
+    id: uid(), session_id: session.id, queue_item_id: queueItemId || null, technique_id: null, // legacy column, unused going forward
     material: material.trim(), category, actual_minutes: Number(actualMinutes) || 0, planned_minutes: plannedMinutes != null ? Number(plannedMinutes) : null,
     completed: completed ? 1 : 0, important: important ? 1 : 0, ref_json: ref ? JSON.stringify(ref) : null,
     notes: notes || "", imported_entry_id: null, timer_started_at: timerStartedAt || null, created_at: now, updated_at: now,
@@ -166,6 +213,8 @@ router.post("/:id/blocks", (req, res) => {
     INSERT INTO session_blocks (id, session_id, queue_item_id, technique_id, material, category, actual_minutes, planned_minutes, completed, important, ref_json, notes, imported_entry_id, timer_started_at, created_at, updated_at)
     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `).run(row.id, row.session_id, row.queue_item_id, row.technique_id, row.material, row.category, row.actual_minutes, row.planned_minutes, row.completed, row.important, row.ref_json, row.notes, row.imported_entry_id, row.timer_started_at, row.created_at, row.updated_at);
+  setBlockTechniques(row.id, techniqueIds !== undefined ? techniqueIds : (techniqueId ? [techniqueId] : []));
+  setBlockLessons(row.id, lessonIds || []);
   db.prepare("UPDATE sessions SET updated_at = ? WHERE id = ?").run(now, session.id);
   res.json(sessionWithBlocks(session, blocksStmt.all(session.id)));
 });
@@ -184,7 +233,6 @@ router.patch("/blocks/:id", (req, res) => {
   const next = {
     material: b.material !== undefined ? b.material.trim() : row.material,
     category: b.category !== undefined ? b.category : row.category,
-    technique_id: b.techniqueId !== undefined ? b.techniqueId : row.technique_id,
     actual_minutes: b.actualMinutes !== undefined ? Number(b.actualMinutes) || 0 : row.actual_minutes,
     planned_minutes: b.plannedMinutes !== undefined ? (b.plannedMinutes != null ? Number(b.plannedMinutes) : null) : row.planned_minutes,
     completed: b.completed !== undefined ? (b.completed ? 1 : 0) : row.completed,
@@ -195,9 +243,12 @@ router.patch("/blocks/:id", (req, res) => {
     updated_at: nowISO(),
   };
   db.prepare(`
-    UPDATE session_blocks SET material = ?, category = ?, technique_id = ?, actual_minutes = ?, planned_minutes = ?,
+    UPDATE session_blocks SET material = ?, category = ?, actual_minutes = ?, planned_minutes = ?,
       completed = ?, important = ?, ref_json = ?, notes = ?, timer_started_at = ?, updated_at = ? WHERE id = ?
-  `).run(next.material, next.category, next.technique_id, next.actual_minutes, next.planned_minutes, next.completed, next.important, next.ref_json, next.notes, next.timer_started_at, next.updated_at, row.id);
+  `).run(next.material, next.category, next.actual_minutes, next.planned_minutes, next.completed, next.important, next.ref_json, next.notes, next.timer_started_at, next.updated_at, row.id);
+  if (b.techniqueIds !== undefined) setBlockTechniques(row.id, b.techniqueIds);
+  else if (b.techniqueId !== undefined) setBlockTechniques(row.id, b.techniqueId ? [b.techniqueId] : []);
+  if (b.lessonIds !== undefined) setBlockLessons(row.id, b.lessonIds);
   const session = db.prepare("SELECT * FROM sessions WHERE id = ?").get(row.session_id);
   db.prepare("UPDATE sessions SET updated_at = ? WHERE id = ?").run(next.updated_at, session.id);
   res.json(sessionWithBlocks(session, blocksStmt.all(session.id)));
@@ -206,6 +257,8 @@ router.patch("/blocks/:id", (req, res) => {
 router.delete("/blocks/:id", (req, res) => {
   const row = findBlockForUser(req.params.id, req.user.id);
   if (!row) return res.status(404).json({ error: "Not found." });
+  db.prepare("DELETE FROM session_block_techniques WHERE block_id = ?").run(row.id);
+  db.prepare("DELETE FROM session_block_lessons WHERE block_id = ?").run(row.id);
   db.prepare("DELETE FROM session_blocks WHERE id = ?").run(row.id);
   const session = db.prepare("SELECT * FROM sessions WHERE id = ?").get(row.session_id);
   db.prepare("UPDATE sessions SET updated_at = ? WHERE id = ?").run(nowISO(), session.id);
@@ -340,3 +393,5 @@ router.post("/import", (req, res) => {
 });
 
 module.exports = router;
+module.exports.techniqueIdsForBlocks = techniqueIdsForBlocks;
+module.exports.techniqueTimesForBlocks = techniqueTimesForBlocks;

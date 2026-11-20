@@ -171,6 +171,7 @@ router.delete("/:id", (req, res) => {
       const placeholders = lessonIds.map(() => "?").join(",");
       db.prepare(`DELETE FROM lesson_courses WHERE lesson_id IN (${placeholders})`).run(...lessonIds);
       db.prepare(`DELETE FROM technique_assignments WHERE scope_type = 'lesson' AND scope_id IN (${placeholders})`).run(...lessonIds);
+      db.prepare(`DELETE FROM session_block_lessons WHERE lesson_id IN (${placeholders})`).run(...lessonIds);
     }
     db.prepare("DELETE FROM lessons WHERE course_id = ?").run(course.id);
     // Sprints that belonged to this course are detached ("general"), not deleted —
@@ -213,6 +214,18 @@ router.post("/:id/lessons", (req, res) => {
   res.json(lessonMeta(row));
 });
 
+router.patch("/:courseId/lessons/:lessonId", (req, res) => {
+  const row = db.prepare(`
+    SELECT lessons.* FROM lessons JOIN courses ON courses.id = lessons.course_id
+    WHERE lessons.id = ? AND lessons.course_id = ? AND courses.user_id = ?
+  `).get(req.params.lessonId, req.params.courseId, req.user.id);
+  if (!row) return res.status(404).json({ error: "Not found." });
+  const title = (req.body?.title || "").trim();
+  if (!title) return res.status(400).json({ error: "title is required." });
+  db.prepare("UPDATE lessons SET title = ? WHERE id = ?").run(title, row.id);
+  res.json(lessonMeta({ ...row, title }));
+});
+
 router.delete("/:courseId/lessons/:lessonId", (req, res) => {
   const row = db.prepare(`
     SELECT lessons.* FROM lessons JOIN courses ON courses.id = lessons.course_id
@@ -224,6 +237,7 @@ router.delete("/:courseId/lessons/:lessonId", (req, res) => {
     db.prepare("DELETE FROM notes WHERE lesson_id = ?").run(row.id);
     db.prepare("DELETE FROM lesson_courses WHERE lesson_id = ?").run(row.id);
     db.prepare("DELETE FROM technique_assignments WHERE scope_type = 'lesson' AND scope_id = ?").run(row.id);
+    db.prepare("DELETE FROM session_block_lessons WHERE lesson_id = ?").run(row.id);
     db.prepare("DELETE FROM lessons WHERE id = ?").run(row.id);
     db.exec("COMMIT");
   } catch (e) {

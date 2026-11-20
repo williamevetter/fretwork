@@ -452,6 +452,29 @@ No racist, sexist, or religious slurs — ZERO TOLERANCE.', '${new Date().toISOS
   ALTER TABLE courses ADD COLUMN goal_type TEXT;
   ALTER TABLE courses ADD COLUMN goal_description TEXT;
   `,
+  // A session block can now cover several techniques and/or course materials at
+  // once, sharing one timer (issue #15) -- session_blocks.technique_id stays in
+  // place (unused going forward) rather than being dropped; this schema has never
+  // had a destructive migration and dropping it buys nothing. Composite PK, no
+  // separate id column needed for a pure join table. Existing single-technique
+  // blocks are backfilled so logged history isn't silently dropped.
+  `
+  CREATE TABLE session_block_techniques (
+    block_id TEXT NOT NULL REFERENCES session_blocks(id),
+    technique_id TEXT NOT NULL REFERENCES techniques(id),
+    PRIMARY KEY (block_id, technique_id)
+  );
+  CREATE INDEX idx_sbt_technique ON session_block_techniques(technique_id);
+  INSERT INTO session_block_techniques (block_id, technique_id)
+    SELECT id, technique_id FROM session_blocks WHERE technique_id IS NOT NULL;
+
+  CREATE TABLE session_block_lessons (
+    block_id TEXT NOT NULL REFERENCES session_blocks(id),
+    lesson_id TEXT NOT NULL REFERENCES lessons(id),
+    PRIMARY KEY (block_id, lesson_id)
+  );
+  CREATE INDEX idx_sbl_lesson ON session_block_lessons(lesson_id);
+  `,
 ];
 
 function runMigrations() {

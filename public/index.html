@@ -780,6 +780,26 @@ function TechniqueTagPicker({ scopeType, scopeId, techniques }) {
             }, t.name, inherited ? " · inherited" : "");
         }));
 }
+// Local-state-only multi-select (nothing persisted until the surrounding form is
+// saved) -- distinct from TechniqueTagPicker, which round-trips to the server on
+// every click and bakes in the scope-tagging/inheritance model. Used for a block's
+// "which techniques/materials does this timer cover" picker.
+function ChipMultiSelect({ options, selected, onToggle, emptyText }) {
+    if (!options.length) return E("div", { style: { fontSize: 12, color: C.inkFaint } }, emptyText || "Nothing to pick from yet.");
+    return E("div", { style: { display: "flex", flexWrap: "wrap", gap: 6 } },
+        options.map((o) => {
+            const on = selected.includes(o.id);
+            return E("button", {
+                type: "button", key: o.id, onClick: () => onToggle(o.id),
+                style: {
+                    fontSize: 12, padding: "5px 10px", borderRadius: 20, cursor: "pointer",
+                    border: `1px solid ${on ? C.brass : C.line}`,
+                    background: on ? alpha(C.brass, "22") : "transparent",
+                    color: on ? C.brass : C.inkDim,
+                },
+            }, o.label);
+        }));
+}
 function fmtMin(min) {
     const whole = Math.round(Number(min) || 0);
     if (whole < 60)
@@ -1646,7 +1666,7 @@ function App({ me }) {
             tab === "instructor" && me && me.role === "instructor" && E(InstructorTab, null),
             tab === "courses" && E(CourseMaterialAndTechniquesTab, {
                 coursesIndex: coursesIndex, setCoursesIndex: setCoursesIndex, notes: notes, setNotes: setNotes,
-                sessions: sessions, techniques: techniques, setTechniques: setTechniques,
+                sessions: sessions, sprints: sprints, techniques: techniques, setTechniques: setTechniques,
             }),
             tab === "gear" && React.createElement(GearTab, { gear: gear, setGear: setGear }),
             tab === "theory" && React.createElement(TheoryTab, { theory: theory, setTheory: setTheory }),
@@ -2334,7 +2354,7 @@ function SessionsTab({ data, sessions, setSessions, plans, setPlans, coursesInde
     }, [editSessionId]);
     const [timeAvailable, setTimeAvailable] = useState(30);
     const [adHocChecked, setAdHocChecked] = useState(false);
-    const [blockForm, setBlockForm] = useState(null); // {editingId, category, material, techniqueId, plannedMinutes, actualMinutes, completed, important, queueItemId, notes}
+    const [blockForm, setBlockForm] = useState(null); // {editingId, category, material, techniqueIds, lessonIds, sharedMode, plannedMinutes, actualMinutes, completed, important, queueItemId, notes}
     const [customMaterial, setCustomMaterial] = useState("");
     const [customCategory, setCustomCategory] = useState("Repeat miscellaneous");
     const [busy, setBusy] = useState(false);
@@ -2451,7 +2471,7 @@ function SessionsTab({ data, sessions, setSessions, plans, setPlans, coursesInde
             if (runningBlock) await stopTimer(runningBlock);
             const sessionId = await ensureDraftSession();
             const updated = await api.sessions.addBlock(sessionId, {
-                material: item.label, category: item.category, techniqueId: item.techniqueId || null,
+                material: item.label, category: item.category, techniqueIds: item.techniqueId ? [item.techniqueId] : [],
                 queueItemId: item.queueItemId || null, important: item.important || false,
                 actualMinutes: 0, completed: false, timerStartedAt: nowISOFull(),
             });
@@ -2460,7 +2480,7 @@ function SessionsTab({ data, sessions, setSessions, plans, setPlans, coursesInde
     };
 
     const blockPayloadFromQueueItem = (item, plannedMinutes) => ({
-        queueItemId: item.id, material: item.title, category: item.category, techniqueId: null,
+        queueItemId: item.id, material: item.title, category: item.category, techniqueIds: [],
         actualMinutes: plannedMinutes, plannedMinutes, completed: false, important: item.important, ref: item.ref || null, notes: "",
     });
     // No server round-trip here — stages a local-only pending draft, created for real
@@ -2495,12 +2515,16 @@ function SessionsTab({ data, sessions, setSessions, plans, setPlans, coursesInde
     // staged data — no row was ever created, so no DELETE call is needed either.
     const closeDraft = () => { setDraftSessionId(null); setPendingDraftData(null); setBlockForm(null); };
 
+    const lessonOptions = useMemo(() => (coursesIndex || []).flatMap((c) => (c.lessons || []).map((l) => ({ id: l.id, label: `${c.name} — ${l.title}` }))), [coursesIndex]);
     const openNewBlockForm = (prefillTitle, prefillCategory) => setBlockForm({
         editingId: null, category: prefillCategory || "Repeat miscellaneous", material: prefillTitle || "",
-        techniqueId: "", plannedMinutes: "", actualMinutes: 10, completed: false, important: false, queueItemId: null, notes: "",
+        techniqueIds: [], lessonIds: [], sharedMode: false,
+        plannedMinutes: "", actualMinutes: 10, completed: false, important: false, queueItemId: null, notes: "",
     });
     const openEditBlockForm = (b) => setBlockForm({
-        editingId: b.id, category: b.category, material: b.material, techniqueId: b.techniqueId || "",
+        editingId: b.id, category: b.category, material: b.material,
+        techniqueIds: b.techniqueIds || [], lessonIds: b.lessonIds || [],
+        sharedMode: (b.techniqueIds || []).length + (b.lessonIds || []).length > 1,
         plannedMinutes: b.plannedMinutes ?? "", actualMinutes: b.actualMinutes, completed: b.completed, important: b.important,
         queueItemId: b.queueItemId, notes: b.notes || "",
     });
@@ -2510,7 +2534,8 @@ function SessionsTab({ data, sessions, setSessions, plans, setPlans, coursesInde
         setBusy(true);
         try {
             const payload = {
-                category: blockForm.category, material: blockForm.material.trim(), techniqueId: blockForm.techniqueId || null,
+                category: blockForm.category, material: blockForm.material.trim(),
+                techniqueIds: blockForm.techniqueIds, lessonIds: blockForm.lessonIds,
                 queueItemId: blockForm.queueItemId, actualMinutes: Number(blockForm.actualMinutes) || 0,
                 plannedMinutes: blockForm.plannedMinutes === "" ? null : Number(blockForm.plannedMinutes),
                 completed: blockForm.completed, important: blockForm.important, notes: blockForm.notes,
@@ -2629,14 +2654,14 @@ function SessionsTab({ data, sessions, setSessions, plans, setPlans, coursesInde
     // Planned blocks on a Plan — structured work items (category/material/planned time),
     // added/removed on the client; "Start session now" turns each into a real block.
     const [planBlockForm, setPlanBlockForm] = useState(null);
-    const openAddPlanBlock = () => setPlanBlockForm({ category: "Repeat miscellaneous", material: "", techniqueId: "", plannedMinutes: "" });
+    const openAddPlanBlock = () => setPlanBlockForm({ category: "Repeat miscellaneous", material: "", techniqueIds: [], lessonIds: [], sharedMode: false, plannedMinutes: "" });
     const cancelAddPlanBlock = () => setPlanBlockForm(null);
     const saveAddPlanBlock = (e) => {
         e.preventDefault();
         if (!planBlockForm.material.trim()) return;
         const block = {
             id: uid(), category: planBlockForm.category, material: planBlockForm.material.trim(),
-            techniqueId: planBlockForm.techniqueId || null,
+            techniqueIds: planBlockForm.techniqueIds, lessonIds: planBlockForm.lessonIds,
             plannedMinutes: planBlockForm.plannedMinutes === "" ? null : Number(planBlockForm.plannedMinutes),
         };
         setPlanForm((f) => ({ ...f, blocks: [...f.blocks, block] }));
@@ -2658,7 +2683,7 @@ function SessionsTab({ data, sessions, setSessions, plans, setPlans, coursesInde
         // starting at 0 actual minutes so Planned vs Actual has something to compare.
         for (const b of p.blocks || []) {
             created = await api.sessions.addBlock(created.id, {
-                material: b.material, category: b.category, techniqueId: b.techniqueId || null,
+                material: b.material, category: b.category, techniqueIds: b.techniqueIds || [], lessonIds: b.lessonIds || [],
                 plannedMinutes: b.plannedMinutes, actualMinutes: 0, completed: false,
             });
         }
@@ -2781,8 +2806,11 @@ function SessionsTab({ data, sessions, setSessions, plans, setPlans, coursesInde
                             b.important && E("span", { style: { fontSize: 10, fontWeight: 700, color: C.rust, border: `1px solid ${alpha(C.rust, "66")}`, borderRadius: 4, padding: "0 5px" } }, "IMPORTANT"),
                             E("span", { style: { fontSize: 11, fontFamily: FONT_MONO, color: C.inkFaint, textTransform: "uppercase" } }, b.category),
                             E("span", { style: { fontSize: 14.5, fontWeight: 600, textDecoration: b.completed ? "line-through" : "none" } }, b.material)),
-                        b.techniqueId && E("span", { style: { fontSize: 11.5, color: C.inkFaint } },
-                            (data.techniques.find((t) => t.id === b.techniqueId) || {}).name || ""),
+                        (b.techniqueIds || []).length + (b.lessonIds || []).length > 0 && E("span", { style: { fontSize: 11.5, color: C.inkFaint } },
+                            [
+                                ...(b.techniqueIds || []).map((id) => (data.techniques.find((t) => t.id === id) || {}).name).filter(Boolean),
+                                ...(b.lessonIds || []).map((id) => (lessonOptions.find((l) => l.id === id) || {}).label).filter(Boolean),
+                            ].join(", ")),
                         b.plannedMinutes != null && E("div", { style: { fontSize: 11, color: C.inkFaint, marginTop: 2 } }, "planned ", fmtMin(b.plannedMinutes)),
                         b.notes && E("div", { style: { fontSize: 12.5, color: C.inkDim, marginTop: 3 } }, b.notes)),
                     E("div", { style: { display: "flex", gap: 6, flexShrink: 0 } },
@@ -2833,9 +2861,37 @@ function SessionsTab({ data, sessions, setSessions, plans, setPlans, coursesInde
                     E(Select, { value: blockForm.category, onChange: (e) => setBlockForm({ ...blockForm, category: e.target.value }) },
                         BLOCK_CATEGORIES.map((c) => E("option", { key: c, value: c }, c))),
                     E(Input, { value: blockForm.material, onChange: (e) => setBlockForm({ ...blockForm, material: e.target.value }), placeholder: "Material", required: true }),
-                    data.techniques.length > 0 && E(Select, { value: blockForm.techniqueId, onChange: (e) => setBlockForm({ ...blockForm, techniqueId: e.target.value }) },
-                        E("option", { value: "" }, "No technique link"),
-                        data.techniques.map((t) => E("option", { key: t.id, value: t.id }, t.name))),
+                    E("label", { style: { display: "flex", alignItems: "center", gap: 8, fontSize: 12.5, color: C.inkDim } },
+                        E("input", { type: "checkbox", checked: blockForm.sharedMode, onChange: (e) => setBlockForm({ ...blockForm, sharedMode: e.target.checked }) }),
+                        "Use session timer for all techniques/materials"),
+                    blockForm.sharedMode ? E("div", { style: { display: "grid", gap: 8 } },
+                        E("div", null,
+                            E("div", { style: { fontSize: 11.5, color: C.inkFaint, marginBottom: 4 } }, "Techniques"),
+                            E(ChipMultiSelect, {
+                                options: data.techniques.map((t) => ({ id: t.id, label: t.name })), selected: blockForm.techniqueIds,
+                                onToggle: (id) => setBlockForm({ ...blockForm, techniqueIds: blockForm.techniqueIds.includes(id) ? blockForm.techniqueIds.filter((x) => x !== id) : [...blockForm.techniqueIds, id] }),
+                                emptyText: "Add techniques first (Techniques tab).",
+                            })),
+                        E("div", null,
+                            E("div", { style: { fontSize: 11.5, color: C.inkFaint, marginBottom: 4 } }, "Course materials"),
+                            E(ChipMultiSelect, {
+                                options: lessonOptions, selected: blockForm.lessonIds,
+                                onToggle: (id) => setBlockForm({ ...blockForm, lessonIds: blockForm.lessonIds.includes(id) ? blockForm.lessonIds.filter((x) => x !== id) : [...blockForm.lessonIds, id] }),
+                                emptyText: "Upload course material first (Course Material tab).",
+                            })))
+                        : E("div", { style: { display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8 } },
+                            data.techniques.length > 0 && E(Select, {
+                                value: blockForm.techniqueIds[0] || "",
+                                onChange: (e) => setBlockForm({ ...blockForm, techniqueIds: e.target.value ? [e.target.value] : [] }),
+                            },
+                                E("option", { value: "" }, "No technique link"),
+                                data.techniques.map((t) => E("option", { key: t.id, value: t.id }, t.name))),
+                            lessonOptions.length > 0 && E(Select, {
+                                value: blockForm.lessonIds[0] || "",
+                                onChange: (e) => setBlockForm({ ...blockForm, lessonIds: e.target.value ? [e.target.value] : [] }),
+                            },
+                                E("option", { value: "" }, "No course material link"),
+                                lessonOptions.map((l) => E("option", { key: l.id, value: l.id }, l.label)))),
                     E("div", { style: { display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8 } },
                         E(Input, { type: "number", min: "0", value: blockForm.actualMinutes, onChange: (e) => setBlockForm({ ...blockForm, actualMinutes: e.target.value }), placeholder: "Actual min" }),
                         E(Input, { type: "number", min: "0", value: blockForm.plannedMinutes, onChange: (e) => setBlockForm({ ...blockForm, plannedMinutes: e.target.value }), placeholder: "Planned min (optional)" })),
@@ -2885,9 +2941,37 @@ function SessionsTab({ data, sessions, setSessions, plans, setPlans, coursesInde
                         E(Select, { value: planBlockForm.category, onChange: (e) => setPlanBlockForm({ ...planBlockForm, category: e.target.value }) },
                             BLOCK_CATEGORIES.map((c) => E("option", { key: c, value: c }, c))),
                         E(Input, { value: planBlockForm.material, onChange: (e) => setPlanBlockForm({ ...planBlockForm, material: e.target.value }), placeholder: "Material" }),
-                        data.techniques.length > 0 && E(Select, { value: planBlockForm.techniqueId, onChange: (e) => setPlanBlockForm({ ...planBlockForm, techniqueId: e.target.value }) },
-                            E("option", { value: "" }, "No technique link"),
-                            data.techniques.map((t) => E("option", { key: t.id, value: t.id }, t.name))),
+                        E("label", { style: { display: "flex", alignItems: "center", gap: 8, fontSize: 12, color: C.inkDim } },
+                            E("input", { type: "checkbox", checked: planBlockForm.sharedMode, onChange: (e) => setPlanBlockForm({ ...planBlockForm, sharedMode: e.target.checked }) }),
+                            "Use session timer for all techniques/materials"),
+                        planBlockForm.sharedMode ? E("div", { style: { display: "grid", gap: 8 } },
+                            E("div", null,
+                                E("div", { style: { fontSize: 11, color: C.inkFaint, marginBottom: 4 } }, "Techniques"),
+                                E(ChipMultiSelect, {
+                                    options: data.techniques.map((t) => ({ id: t.id, label: t.name })), selected: planBlockForm.techniqueIds,
+                                    onToggle: (id) => setPlanBlockForm({ ...planBlockForm, techniqueIds: planBlockForm.techniqueIds.includes(id) ? planBlockForm.techniqueIds.filter((x) => x !== id) : [...planBlockForm.techniqueIds, id] }),
+                                    emptyText: "Add techniques first (Techniques tab).",
+                                })),
+                            E("div", null,
+                                E("div", { style: { fontSize: 11, color: C.inkFaint, marginBottom: 4 } }, "Course materials"),
+                                E(ChipMultiSelect, {
+                                    options: lessonOptions, selected: planBlockForm.lessonIds,
+                                    onToggle: (id) => setPlanBlockForm({ ...planBlockForm, lessonIds: planBlockForm.lessonIds.includes(id) ? planBlockForm.lessonIds.filter((x) => x !== id) : [...planBlockForm.lessonIds, id] }),
+                                    emptyText: "Upload course material first (Course Material tab).",
+                                })))
+                            : E("div", { style: { display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8 } },
+                                data.techniques.length > 0 && E(Select, {
+                                    value: planBlockForm.techniqueIds[0] || "",
+                                    onChange: (e) => setPlanBlockForm({ ...planBlockForm, techniqueIds: e.target.value ? [e.target.value] : [] }),
+                                },
+                                    E("option", { value: "" }, "No technique link"),
+                                    data.techniques.map((t) => E("option", { key: t.id, value: t.id }, t.name))),
+                                lessonOptions.length > 0 && E(Select, {
+                                    value: planBlockForm.lessonIds[0] || "",
+                                    onChange: (e) => setPlanBlockForm({ ...planBlockForm, lessonIds: e.target.value ? [e.target.value] : [] }),
+                                },
+                                    E("option", { value: "" }, "No course material link"),
+                                    lessonOptions.map((l) => E("option", { key: l.id, value: l.id }, l.label)))),
                         E(Input, { type: "number", min: "0", value: planBlockForm.plannedMinutes, onChange: (e) => setPlanBlockForm({ ...planBlockForm, plannedMinutes: e.target.value }), placeholder: "Planned min (optional)" }),
                         E("div", { style: { display: "flex", gap: 8 } },
                             E(Btn, { type: "button", onClick: saveAddPlanBlock, disabled: !planBlockForm.material.trim() }, "Add block"),
@@ -3456,6 +3540,8 @@ function CalendarTab({ sessions, sprints, coursesIndex, onEditSession }) {
 --------------------------------------------------------- */
 function TechniquesTab({ sessions, techniques, setTechniques }) {
     const [name, setName] = useState("");
+    const [editingId, setEditingId] = useState(null);
+    const [editName, setEditName] = useState("");
     const totals = {};
     sessions.forEach((s) => {
         Object.entries(s.techniqueTimes || {}).forEach(([id, min]) => {
@@ -3480,6 +3566,14 @@ function TechniquesTab({ sessions, techniques, setTechniques }) {
         setName("");
     };
     const remove = async (id) => { await api.techniques.remove(id); setTechniques((t) => t.filter((x) => x.id !== id)); };
+    const startEdit = (t) => { setEditingId(t.id); setEditName(t.name); };
+    const cancelEdit = () => { setEditingId(null); setEditName(""); };
+    const saveEdit = async (t) => {
+        if (!editName.trim()) return;
+        const updated = await api.techniques.patch(t.id, editName.trim());
+        setTechniques((list) => list.map((x) => (x.id === t.id ? updated : x)));
+        setEditingId(null);
+    };
     return (React.createElement("div", { style: { display: "grid", gap: 14 } },
         React.createElement(Card, null,
             React.createElement(Label, null, "Add a technique"),
@@ -3495,14 +3589,21 @@ function TechniquesTab({ sessions, techniques, setTechniques }) {
                     padding: "9px 0",
                     borderBottom: `1px solid ${C.line}`,
                 } },
-                React.createElement("div", null,
-                    React.createElement("div", { style: { fontWeight: 600, fontSize: 14 } }, t.name),
-                    React.createElement("div", { style: { fontFamily: FONT_MONO, fontSize: 11, color: C.inkFaint, marginTop: 2 } },
-                        fmtMin(totals[t.id] || 0),
-                        " total \u00B7 ",
-                        fmtMin(weekTotals[t.id] || 0),
-                        " this week")),
-                React.createElement(Btn, { variant: "danger", onClick: () => remove(t.id), style: { fontSize: 11.5, padding: "6px 9px" } }, "\u2715"))))))));
+                editingId === t.id
+                    ? E("div", { style: { display: "flex", gap: 6, flex: 1 } },
+                        E(Input, { value: editName, onChange: (e) => setEditName(e.target.value), style: { fontSize: 13 } }),
+                        E(Btn, { onClick: () => saveEdit(t), style: { fontSize: 11.5, padding: "6px 9px" } }, "Save"),
+                        E(Btn, { variant: "ghost", onClick: cancelEdit, style: { fontSize: 11.5, padding: "6px 9px" } }, "Cancel"))
+                    : React.createElement("div", null,
+                        React.createElement("div", { style: { fontWeight: 600, fontSize: 14 } }, t.name),
+                        React.createElement("div", { style: { fontFamily: FONT_MONO, fontSize: 11, color: C.inkFaint, marginTop: 2 } },
+                            fmtMin(totals[t.id] || 0),
+                            " total \u00B7 ",
+                            fmtMin(weekTotals[t.id] || 0),
+                            " this week")),
+                editingId !== t.id && E("div", { style: { display: "flex", gap: 6 } },
+                    E(Btn, { variant: "ghost", onClick: () => startEdit(t), style: { fontSize: 11.5, padding: "6px 9px" } }, "Edit"),
+                    React.createElement(Btn, { variant: "danger", onClick: () => remove(t.id), style: { fontSize: 11.5, padding: "6px 9px" } }, "\u2715")))))))));
 }
 /* ---------------------------------------------------------
    TOPICS TAB (issues / problems / questions)
@@ -4263,13 +4364,13 @@ function MessagesTab() {
    COURSE MATERIAL & TECHNIQUES — one nav entry, two fully separate entities
    underneath (no data merge, just a shared sub-tab switcher).
 --------------------------------------------------------- */
-function CourseMaterialAndTechniquesTab({ coursesIndex, setCoursesIndex, notes, setNotes, sessions, techniques, setTechniques }) {
+function CourseMaterialAndTechniquesTab({ coursesIndex, setCoursesIndex, notes, setNotes, sessions, sprints, techniques, setTechniques }) {
     const [view, setView] = useState("material"); // material | techniques
     return E("div", { style: { display: "grid", gap: 14 } },
         E("div", { style: { display: "flex", gap: 8 } },
             E(Btn, { variant: view === "material" ? "primary" : "ghost", onClick: () => setView("material") }, "Course Material"),
             E(Btn, { variant: view === "techniques" ? "primary" : "ghost", onClick: () => setView("techniques") }, "Techniques")),
-        view === "material" && E(CourseMaterialTab, { coursesIndex: coursesIndex, setCoursesIndex: setCoursesIndex, notes: notes, setNotes: setNotes, techniques: techniques }),
+        view === "material" && E(CourseMaterialTab, { coursesIndex: coursesIndex, setCoursesIndex: setCoursesIndex, notes: notes, setNotes: setNotes, sessions: sessions, sprints: sprints, techniques: techniques }),
         view === "techniques" && E(TechniquesTab, { sessions: sessions, techniques: techniques, setTechniques: setTechniques }));
 }
 /* ---------------------------------------------------------
@@ -4282,7 +4383,7 @@ const CHECKUP_QUESTIONS = [
     "What would you focus on next time?",
     "Any additional notes?",
 ];
-function CourseMaterialTab({ coursesIndex, setCoursesIndex, notes, setNotes, techniques }) {
+function CourseMaterialTab({ coursesIndex, setCoursesIndex, notes, setNotes, sessions, sprints, techniques }) {
     const [view, setView] = useState("library"); // library | notesIndex
     const [selectedCourseId, setSelectedCourseId] = useState(null);
     const [selectedLessonId, setSelectedLessonId] = useState(null);
@@ -4302,6 +4403,23 @@ function CourseMaterialTab({ coursesIndex, setCoursesIndex, notes, setNotes, tec
     const [detailsMsg, setDetailsMsg] = useState("");
     const selectedCourse = coursesIndex.find((c) => c.id === selectedCourseId) || null;
     const continuedAsCourse = selectedCourse ? coursesIndex.find((c) => c.previousCourseId === selectedCourse.id) : null;
+    // Per-course Technique Breakdown -- same techTotals/techRows/techBreakdown
+    // aggregation the Dashboard's global version uses, just pre-filtered to this
+    // course's own sessions (via the sprintId -> sprints.courseId chain, same
+    // pattern as the Dashboard's courseBreakdown).
+    const courseTechBreakdown = useMemo(() => {
+        if (!selectedCourse || !sessions || !sprints) return [];
+        const courseSprintIds = new Set(sprints.filter((sp) => sp.courseId === selectedCourse.id).map((sp) => sp.id));
+        const courseSessions = sessions.filter((s) => s.sprintId && courseSprintIds.has(s.sprintId));
+        const techTotals = {};
+        courseSessions.forEach((s) => {
+            Object.entries(s.techniqueTimes || {}).forEach(([id, min]) => { techTotals[id] = (techTotals[id] || 0) + min; });
+        });
+        return (techniques || [])
+            .map((t) => ({ label: t.name, minutes: techTotals[t.id] || 0 }))
+            .filter((t) => t.minutes > 0)
+            .sort((a, b) => b.minutes - a.minutes);
+    }, [selectedCourse, sessions, sprints, techniques]);
     const loadCourse = useCallback(async (courseId) => {
         setContentLoading(true);
         setUploadError("");
@@ -4446,6 +4564,17 @@ function CourseMaterialTab({ coursesIndex, setCoursesIndex, notes, setNotes, tec
             setUploadError(err.message || "Couldn't add that link.");
         }
         setUploading(false);
+    };
+    const [editingLessonId, setEditingLessonId] = useState(null);
+    const [editLessonTitle, setEditLessonTitle] = useState("");
+    const startEditLesson = (l) => { setEditingLessonId(l.id); setEditLessonTitle(l.title); };
+    const cancelEditLesson = () => { setEditingLessonId(null); setEditLessonTitle(""); };
+    const saveEditLesson = async (l) => {
+        if (!editLessonTitle.trim()) return;
+        const updated = await api.courses.patchLesson(selectedCourseId, l.id, editLessonTitle.trim());
+        setCoursesIndex((idx) => idx.map((c) => (c.id === selectedCourseId ? { ...c, lessons: (c.lessons || []).map((x) => (x.id === l.id ? updated : x)) } : c)));
+        setCourseContent((c) => ({ lessons: ((c && c.lessons) || []).map((x) => (x.id === l.id ? { ...x, title: updated.title } : x)) }));
+        setEditingLessonId(null);
     };
     const deleteLesson = async (lessonId) => {
         await api.courses.removeLesson(selectedCourseId, lessonId);
@@ -4599,6 +4728,9 @@ function CourseMaterialTab({ coursesIndex, setCoursesIndex, notes, setNotes, tec
                         Math.round(goalProgress.spentMinutes), " / ", goalProgress.goalMinutes, " min (", goalProgress.periodLabel, ")"),
                     E("div", { style: { height: 8, borderRadius: 4, background: C.bg2, border: `1px solid ${C.line}`, overflow: "hidden" } },
                         E("div", { style: { height: "100%", width: `${Math.min(100, (goalProgress.spentMinutes / goalProgress.goalMinutes) * 100)}%`, background: goalProgress.spentMinutes >= goalProgress.goalMinutes ? C.sage : C.brass, transition: "width 0.3s" } }))))),
+        view === "library" && selectedCourseId && !selectedLessonId && E(Card, null,
+            E(Label, null, "Technique breakdown"),
+            E(PieChart, { slices: courseTechBreakdown })),
             React.createElement(Card, null,
                 React.createElement(Label, null, "Upload a lesson (Word .docx, PDF, RTF, or image)"),
                 React.createElement("input", { type: "file", accept: ".docx,.pdf,.rtf,image/png,image/jpeg,image/gif,image/webp", disabled: uploading, onChange: (e) => { if (e.target.files[0])
@@ -4618,14 +4750,21 @@ function CourseMaterialTab({ coursesIndex, setCoursesIndex, notes, setNotes, tec
                         padding: "9px 0",
                         borderBottom: `1px solid ${C.line}`,
                         cursor: "pointer",
-                    }, onClick: () => setSelectedLessonId(l.id) },
-                    React.createElement("div", null,
-                        React.createElement("div", { style: { fontWeight: 600, fontSize: 14 } }, l.title),
-                        React.createElement("div", { style: { fontFamily: FONT_MONO, fontSize: 10.5, color: C.inkFaint, marginTop: 2 } },
-                            l.fileType.toUpperCase(),
-                            " \u00B7 ",
-                            l.uploadedDate)),
-                    React.createElement(Btn, { variant: "danger", onClick: (e) => { e.stopPropagation(); deleteLesson(l.id); }, style: { fontSize: 11, padding: "5px 8px", flexShrink: 0 } }, "\u2715")))))))),
+                    }, onClick: () => editingLessonId !== l.id && setSelectedLessonId(l.id) },
+                    editingLessonId === l.id
+                        ? E("div", { style: { display: "flex", gap: 6, flex: 1 }, onClick: (e) => e.stopPropagation() },
+                            E(Input, { value: editLessonTitle, onChange: (e) => setEditLessonTitle(e.target.value), style: { fontSize: 13 } }),
+                            E(Btn, { onClick: () => saveEditLesson(l), style: { fontSize: 11, padding: "5px 8px" } }, "Save"),
+                            E(Btn, { variant: "ghost", onClick: cancelEditLesson, style: { fontSize: 11, padding: "5px 8px" } }, "Cancel"))
+                        : React.createElement("div", null,
+                            React.createElement("div", { style: { fontWeight: 600, fontSize: 14 } }, l.title),
+                            React.createElement("div", { style: { fontFamily: FONT_MONO, fontSize: 10.5, color: C.inkFaint, marginTop: 2 } },
+                                l.fileType.toUpperCase(),
+                                " \u00B7 ",
+                                l.uploadedDate)),
+                    editingLessonId !== l.id && E("div", { style: { display: "flex", gap: 6, flexShrink: 0 } },
+                        E(Btn, { variant: "ghost", onClick: (e) => { e.stopPropagation(); startEditLesson(l); }, style: { fontSize: 11, padding: "5px 8px" } }, "Edit"),
+                        React.createElement(Btn, { variant: "danger", onClick: (e) => { e.stopPropagation(); deleteLesson(l.id); }, style: { fontSize: 11, padding: "5px 8px" } }, "\u2715"))))))))),
         view === "library" && selectedCourseId && selectedLessonId && (React.createElement(LessonReader, { course: selectedCourse, lessonMeta: ((selectedCourse === null || selectedCourse === void 0 ? void 0 : selectedCourse.lessons) || []).find((l) => l.id === selectedLessonId), lessonContent: ((courseContent === null || courseContent === void 0 ? void 0 : courseContent.lessons) || []).find((l) => l.id === selectedLessonId), notes: notes.filter((n) => n.lessonId === selectedLessonId), setNotes: setNotes, onBack: () => setSelectedLessonId(null), techniques: techniques, coursesIndex: coursesIndex, onCoursesChanged: refreshCourses }))));
 }
 function LessonReader({ course, lessonMeta, lessonContent, notes, setNotes, onBack, techniques, coursesIndex, onCoursesChanged }) {

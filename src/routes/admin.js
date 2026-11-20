@@ -168,6 +168,11 @@ router.delete("/users/:id", (req, res) => {
   try {
     db.exec("BEGIN");
     db.prepare("DELETE FROM audio_recordings WHERE user_id = ?").run(target.id);
+    // FKs are off for this whole transaction, so these two aren't needed to avoid an
+    // error -- added anyway to avoid leaving orphaned join rows behind, same spirit
+    // as every other cleanup step in this route.
+    db.prepare("DELETE FROM session_block_techniques WHERE block_id IN (SELECT id FROM session_blocks WHERE session_id IN (SELECT id FROM sessions WHERE user_id = ?))").run(target.id);
+    db.prepare("DELETE FROM session_block_lessons WHERE block_id IN (SELECT id FROM session_blocks WHERE session_id IN (SELECT id FROM sessions WHERE user_id = ?))").run(target.id);
     db.prepare("DELETE FROM session_blocks WHERE session_id IN (SELECT id FROM sessions WHERE user_id = ?)").run(target.id);
     db.prepare("DELETE FROM sessions WHERE user_id = ?").run(target.id);
     db.prepare("DELETE FROM queue_items WHERE sprint_id IN (SELECT id FROM sprints WHERE user_id = ?)").run(target.id);

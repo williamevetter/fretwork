@@ -23,12 +23,23 @@ router.post("/", (req, res) => {
   res.json(rowToTechnique(row));
 });
 
+router.patch("/:id", (req, res) => {
+  const row = db.prepare("SELECT * FROM techniques WHERE id = ? AND user_id = ?").get(req.params.id, req.user.id);
+  if (!row) return res.status(404).json({ error: "Not found." });
+  const name = (req.body?.name || "").trim();
+  if (!name) return res.status(400).json({ error: "name is required." });
+  db.prepare("UPDATE techniques SET name = ? WHERE id = ?").run(name, row.id);
+  res.json(rowToTechnique({ ...row, name }));
+});
+
 router.delete("/:id", (req, res) => {
   const row = db.prepare("SELECT * FROM techniques WHERE id = ? AND user_id = ?").get(req.params.id, req.user.id);
   if (!row) return res.status(404).json({ error: "Not found." });
-  // technique_assignments.technique_id references this row — clear its tags (at every
-  // scope) before deleting, same as every other cascade in this app.
+  // technique_assignments.technique_id and session_block_techniques.technique_id
+  // both reference this row — clear both before deleting, same as every other
+  // cascade in this app.
   db.prepare("DELETE FROM technique_assignments WHERE technique_id = ?").run(req.params.id);
+  db.prepare("DELETE FROM session_block_techniques WHERE technique_id = ?").run(req.params.id);
   db.prepare("DELETE FROM techniques WHERE id = ?").run(req.params.id);
   res.json({ ok: true });
 });

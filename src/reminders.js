@@ -1,6 +1,7 @@
 const cron = require("node-cron");
 const { db } = require("./db");
 const { sendEmail, SMTP_CONFIGURED } = require("./mailer");
+const { techniqueTimesForBlocks, techniqueIdsForBlocks } = require("./routes/sessions");
 
 function fmtMin(min) {
   if (min < 60) return `${min}m`;
@@ -62,8 +63,8 @@ async function sendWeeklySummaries() {
     `).all(user.id, weekAgoISO.slice(0, 10));
 
     const totalMin = blocks.reduce((sum, b) => sum + (Number(b.actual_minutes) || 0), 0);
-    const techTotals = {};
-    blocks.forEach((b) => { if (b.technique_id) techTotals[b.technique_id] = (techTotals[b.technique_id] || 0) + (Number(b.actual_minutes) || 0); });
+    const techMap = techniqueIdsForBlocks(blocks.map((b) => b.id));
+    const techTotals = techniqueTimesForBlocks(blocks, techMap);
 
     const topTech = Object.entries(techTotals)
       .sort((a, b) => b[1] - a[1])
