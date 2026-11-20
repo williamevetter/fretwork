@@ -141,3 +141,8 @@ A real admin can promote a user to an instructor, who can then invite students (
 *Major*
 
 Real CSS breakpoints now adapt the nav/header/main layout to phone/tablet/computer screen widths, with a per-account "Interface" setting that can force a specific one regardless of actual screen size. Added a light color theme alongside the existing dark default, switchable per-account — every color became a CSS variable lookup so switching is instant with no reload. Course Material and Techniques are now one nav entry with a sub-tab switcher between them (navigation only; the two stayed fully separate underneath). Also: "make courses optionally indefinite" turned out to already be true since v11's course-lifecycle work — nothing needed building there.
+
+## v14 — Course details: description edit, URL, notes, dates, time goals
+*Significant*
+
+The course detail view gained a Details card (editable description, a URL field, free-text notes, start/end dates with an "Indefinite" checkbox) and a Goals card: a time-spent target in minutes, windowed by a configurable period — custom (all-time total), sprint (the current active sprint), session (most recent session), or daily/weekly/monthly (a rolling window) — shown as a progress bar, plus a goal type and free-text description. Found and fixed a real bug while testing: the "most recent session" date sort broke on same-day ties.
