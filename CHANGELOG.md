@@ -126,3 +126,8 @@ New Calendar tab (month grid + day drill-down) overlaying sessions, sprint date 
 *Minor*
 
 The resizable wrapper added in v11 gave PDF/YouTube content zero padding, so the embedded `<iframe>` covered the native resize grip's hit area at the bottom-right corner — an iframe is its own browsing context, so the drag never started. Reserved a bare strip of real padding along the bottom so that corner stays on the outer div.
+
+## v11.2 — Version number + in-app changelog
+*Significant*
+
+Added a small version badge to the header (read straight from this file, so there's no separate version constant to keep in sync) that opens a Changelog modal mirroring these release notes exactly — same file, parsed into entries, newest first. The modal also links out to reporting a bug or idea, by email or by opening a new GitHub issue.
