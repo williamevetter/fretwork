@@ -37,9 +37,13 @@ router.delete("/:id", (req, res) => {
   if (!row) return res.status(404).json({ error: "Not found." });
   // technique_assignments.technique_id and session_block_techniques.technique_id
   // both reference this row — clear both before deleting, same as every other
-  // cascade in this app.
+  // cascade in this app. session_blocks.technique_id (the pre-v16 legacy single-FK
+  // column, left in place unused) still enforces its own FK even though nothing
+  // reads it anymore -- clear it too, or deleting a technique that predates v16
+  // fails outright on any block that was never re-saved through the new system.
   db.prepare("DELETE FROM technique_assignments WHERE technique_id = ?").run(req.params.id);
   db.prepare("DELETE FROM session_block_techniques WHERE technique_id = ?").run(req.params.id);
+  db.prepare("UPDATE session_blocks SET technique_id = NULL WHERE technique_id = ?").run(req.params.id);
   db.prepare("DELETE FROM techniques WHERE id = ?").run(req.params.id);
   res.json({ ok: true });
 });
