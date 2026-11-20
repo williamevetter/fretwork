@@ -149,6 +149,7 @@ const api = {
     reopen: (id) => apiCall("POST", `/courses/${id}/reopen`),
     continueCourse: (id, name) => apiCall("POST", `/courses/${id}/continue`, { name }),
     checkups: (id) => apiCall("GET", `/courses/${id}/checkups`),
+    goalProgress: (id) => apiCall("GET", `/courses/${id}/goal-progress`),
   },
   notes: {
     list: () => apiCall("GET", "/notes"),
@@ -4210,6 +4211,10 @@ function CourseMaterialTab({ coursesIndex, setCoursesIndex, notes, setNotes, tec
     const [checkupAnswers, setCheckupAnswers] = useState(["", "", "", ""]);
     const [checkups, setCheckups] = useState([]);
     const [partName, setPartName] = useState("");
+    const [detailsForm, setDetailsForm] = useState(null);
+    const [goalForm, setGoalForm] = useState(null);
+    const [goalProgress, setGoalProgress] = useState(null);
+    const [detailsMsg, setDetailsMsg] = useState("");
     const selectedCourse = coursesIndex.find((c) => c.id === selectedCourseId) || null;
     const continuedAsCourse = selectedCourse ? coursesIndex.find((c) => c.previousCourseId === selectedCourse.id) : null;
     const loadCourse = useCallback(async (courseId) => {
@@ -4229,9 +4234,33 @@ function CourseMaterialTab({ coursesIndex, setCoursesIndex, notes, setNotes, tec
         setView("library");
         loadCourse(id);
         setCheckups([]);
+        setDetailsMsg("");
         const c = coursesIndex.find((x) => x.id === id);
         if (c && c.status === "completed")
             loadCheckups(id);
+        if (c) {
+            setDetailsForm({ description: c.description || "", url: c.url || "", notes: c.notes || "", startDate: c.startDate || "", endDate: c.endDate || "", indefinite: !c.endDate });
+            setGoalForm({ goalMinutes: c.goalMinutes || "", goalPeriod: c.goalPeriod || "custom", goalType: c.goalType || "personal", goalDescription: c.goalDescription || "" });
+            setGoalProgress(null);
+            if (c.goalMinutes) api.courses.goalProgress(c.id).then(setGoalProgress).catch(() => {});
+        }
+    };
+    const saveDetails = async () => {
+        const updated = await api.courses.patch(selectedCourseId, {
+            description: detailsForm.description, url: detailsForm.url, notes: detailsForm.notes,
+            startDate: detailsForm.startDate || null, endDate: detailsForm.indefinite ? null : (detailsForm.endDate || null),
+        });
+        setCoursesIndex((idx) => idx.map((c) => (c.id === selectedCourseId ? { ...c, ...updated } : c)));
+        setDetailsMsg("Saved.");
+        setTimeout(() => setDetailsMsg(""), 2500);
+    };
+    const saveGoal = async () => {
+        const updated = await api.courses.patch(selectedCourseId, {
+            goalMinutes: goalForm.goalMinutes || null, goalPeriod: goalForm.goalPeriod,
+            goalType: goalForm.goalType, goalDescription: goalForm.goalDescription,
+        });
+        setCoursesIndex((idx) => idx.map((c) => (c.id === selectedCourseId ? { ...c, ...updated } : c)));
+        setGoalProgress(updated.goalMinutes ? await api.courses.goalProgress(selectedCourseId) : null);
     };
     const addCourse = async (e) => {
         e.preventDefault();
@@ -4430,6 +4459,61 @@ function CourseMaterialTab({ coursesIndex, setCoursesIndex, notes, setNotes, tec
                                 E(Input, { value: partName, onChange: (e) => setPartName(e.target.value), placeholder: `${selectedCourse.name} — Part 2`, style: { width: 200 } }),
                                 E(Btn, { type: "submit" }, "Start Part 2")),
                             continuedAsCourse && E("span", { style: { fontSize: 12, color: C.brass, cursor: "pointer" }, onClick: () => openCourse(continuedAsCourse.id) }, "→ continued as ", continuedAsCourse.name))))),
+        view === "library" && selectedCourseId && !selectedLessonId && detailsForm && E(Card, null,
+            E(Label, null, "Details"),
+            E("div", { style: { display: "grid", gap: 10 } },
+                E("div", null,
+                    E("div", { style: { fontSize: 11.5, color: C.inkFaint, marginBottom: 4 } }, "Description"),
+                    E(TextArea, { rows: 2, value: detailsForm.description, onChange: (e) => setDetailsForm({ ...detailsForm, description: e.target.value }) })),
+                E("div", null,
+                    E("div", { style: { fontSize: 11.5, color: C.inkFaint, marginBottom: 4 } }, "URL"),
+                    E(Input, { value: detailsForm.url, onChange: (e) => setDetailsForm({ ...detailsForm, url: e.target.value }), placeholder: "https://…" })),
+                E("div", null,
+                    E("div", { style: { fontSize: 11.5, color: C.inkFaint, marginBottom: 4 } }, "Notes"),
+                    E(TextArea, { rows: 3, value: detailsForm.notes, onChange: (e) => setDetailsForm({ ...detailsForm, notes: e.target.value }) })),
+                E("div", null,
+                    E("div", { style: { fontSize: 11.5, color: C.inkFaint, marginBottom: 4 } }, "Start / End"),
+                    E("div", { style: { display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" } },
+                        E(Input, { type: "date", value: detailsForm.startDate || "", onChange: (e) => setDetailsForm({ ...detailsForm, startDate: e.target.value }), style: { width: 150 } }),
+                        E("span", { style: { color: C.inkFaint, fontSize: 12.5 } }, "to"),
+                        !detailsForm.indefinite && E(Input, { type: "date", value: detailsForm.endDate || "", onChange: (e) => setDetailsForm({ ...detailsForm, endDate: e.target.value }), style: { width: 150 } }),
+                        E("label", { style: { display: "flex", alignItems: "center", gap: 6, fontSize: 12.5, color: C.inkDim, cursor: "pointer" } },
+                            E("input", { type: "checkbox", checked: detailsForm.indefinite, onChange: (e) => setDetailsForm({ ...detailsForm, indefinite: e.target.checked }) }),
+                            "Indefinite"))),
+                E("div", { style: { display: "flex", gap: 10, alignItems: "center" } },
+                    E(Btn, { onClick: saveDetails }, "Save details"),
+                    detailsMsg && E("span", { style: { fontSize: 12, color: C.sage } }, detailsMsg)))),
+        view === "library" && selectedCourseId && !selectedLessonId && goalForm && E(Card, null,
+            E(Label, null, "Goals"),
+            E("div", { style: { display: "grid", gap: 10 } },
+                E("div", { style: { display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center" } },
+                    E("div", null,
+                        E("div", { style: { fontSize: 11.5, color: C.inkFaint, marginBottom: 4 } }, "Time goal (minutes)"),
+                        E(Input, { type: "number", min: "1", value: goalForm.goalMinutes, onChange: (e) => setGoalForm({ ...goalForm, goalMinutes: e.target.value }), style: { width: 100 } })),
+                    E("div", null,
+                        E("div", { style: { fontSize: 11.5, color: C.inkFaint, marginBottom: 4 } }, "Per"),
+                        E(Select, { value: goalForm.goalPeriod, onChange: (e) => setGoalForm({ ...goalForm, goalPeriod: e.target.value }) },
+                            E("option", { value: "custom" }, "Custom (all time)"),
+                            E("option", { value: "sprint" }, "Sprint"),
+                            E("option", { value: "session" }, "Session"),
+                            E("option", { value: "daily" }, "Daily"),
+                            E("option", { value: "weekly" }, "Weekly"),
+                            E("option", { value: "monthly" }, "Monthly"))),
+                    E("div", null,
+                        E("div", { style: { fontSize: 11.5, color: C.inkFaint, marginBottom: 4 } }, "Goal type"),
+                        E(Select, { value: goalForm.goalType, onChange: (e) => setGoalForm({ ...goalForm, goalType: e.target.value }) },
+                            E("option", { value: "technique" }, "Technique"),
+                            E("option", { value: "songs" }, "Songs"),
+                            E("option", { value: "personal" }, "Personal")))),
+                E("div", null,
+                    E("div", { style: { fontSize: 11.5, color: C.inkFaint, marginBottom: 4 } }, "Goal description"),
+                    E(Input, { value: goalForm.goalDescription, onChange: (e) => setGoalForm({ ...goalForm, goalDescription: e.target.value }), placeholder: "e.g. Master barre chords, learn 3 songs…" })),
+                E(Btn, { onClick: saveGoal }, "Save goal"),
+                goalProgress && goalProgress.goalMinutes && E("div", { style: { marginTop: 4 } },
+                    E("div", { style: { fontSize: 11.5, color: C.inkFaint, marginBottom: 4 } },
+                        Math.round(goalProgress.spentMinutes), " / ", goalProgress.goalMinutes, " min (", goalProgress.periodLabel, ")"),
+                    E("div", { style: { height: 8, borderRadius: 4, background: C.bg2, border: `1px solid ${C.line}`, overflow: "hidden" } },
+                        E("div", { style: { height: "100%", width: `${Math.min(100, (goalProgress.spentMinutes / goalProgress.goalMinutes) * 100)}%`, background: goalProgress.spentMinutes >= goalProgress.goalMinutes ? C.sage : C.brass, transition: "width 0.3s" } }))))),
             React.createElement(Card, null,
                 React.createElement(Label, null, "Upload a lesson (Word .docx, PDF, RTF, or image)"),
                 React.createElement("input", { type: "file", accept: ".docx,.pdf,.rtf,image/png,image/jpeg,image/gif,image/webp", disabled: uploading, onChange: (e) => { if (e.target.files[0])

@@ -1,6 +1,7 @@
 const express = require("express");
 const { db } = require("../db");
 const { uid, nowISO } = require("../ids");
+const { addDays } = require("../sprintLogic");
 const requireAuth = require("../middleware");
 
 const router = express.Router();
@@ -14,12 +15,18 @@ function lessonFull(row) {
 }
 const SPRINT_LENGTH_UNITS = ["day", "week", "month", "year"];
 const WEEKDAY_CODES = ["mon", "tue", "wed", "thu", "fri", "sat", "sun"];
+const GOAL_PERIODS = ["custom", "sprint", "session", "daily", "weekly", "monthly"];
+const GOAL_TYPES = ["technique", "songs", "personal"];
 function courseEntry(row, lessonRows) {
   return {
     id: row.id, name: row.name, description: row.description || "",
     sprintLengthValue: row.sprint_length_value, sprintLengthUnit: row.sprint_length_unit,
     status: row.status || "active", completedAt: row.completed_at || null, previousCourseId: row.previous_course_id || null,
     focusDays: row.focus_days_json ? JSON.parse(row.focus_days_json) : [],
+    url: row.url || "", notes: row.notes || "",
+    startDate: row.start_date || null, endDate: row.end_date || null, // endDate null = indefinite
+    goalMinutes: row.goal_minutes || null, goalPeriod: row.goal_period || null,
+    goalType: row.goal_type || null, goalDescription: row.goal_description || "",
     lessons: lessonRows.map(lessonMeta),
   };
 }
@@ -80,9 +87,71 @@ router.patch("/:id", (req, res) => {
   const focus_days_json = req.body?.focusDays !== undefined
     ? JSON.stringify((req.body.focusDays || []).filter((d) => WEEKDAY_CODES.includes(d)))
     : row.focus_days_json;
-  db.prepare("UPDATE courses SET name = ?, description = ?, sprint_length_value = ?, sprint_length_unit = ?, focus_days_json = ? WHERE id = ?")
-    .run(name, description, sprint_length_value, sprint_length_unit, focus_days_json, row.id);
-  res.json(courseEntry({ ...row, name, description, sprint_length_value, sprint_length_unit, focus_days_json }, lessonsForCourseStmt.all(row.id, row.id)));
+  const url = req.body?.url !== undefined ? String(req.body.url).trim() : row.url;
+  const notes = req.body?.notes !== undefined ? String(req.body.notes).trim() : row.notes;
+  const start_date = req.body?.startDate !== undefined ? (req.body.startDate || null) : row.start_date;
+  // "Indefinite" is just endDate: null -- no separate flag, same precedent as the
+  // rest of this schema (e.g. courses never had a forced end date to begin with).
+  const end_date = req.body?.endDate !== undefined ? (req.body.endDate || null) : row.end_date;
+  const goal_minutes = req.body?.goalMinutes !== undefined ? (Number(req.body.goalMinutes) || null) : row.goal_minutes;
+  const goal_period = req.body?.goalPeriod !== undefined
+    ? (GOAL_PERIODS.includes(req.body.goalPeriod) ? req.body.goalPeriod : null)
+    : row.goal_period;
+  const goal_type = req.body?.goalType !== undefined
+    ? (GOAL_TYPES.includes(req.body.goalType) ? req.body.goalType : null)
+    : row.goal_type;
+  const goal_description = req.body?.goalDescription !== undefined ? String(req.body.goalDescription).trim() : row.goal_description;
+  db.prepare(`
+    UPDATE courses SET name = ?, description = ?, sprint_length_value = ?, sprint_length_unit = ?, focus_days_json = ?,
+      url = ?, notes = ?, start_date = ?, end_date = ?, goal_minutes = ?, goal_period = ?, goal_type = ?, goal_description = ?
+    WHERE id = ?
+  `).run(name, description, sprint_length_value, sprint_length_unit, focus_days_json,
+    url, notes, start_date, end_date, goal_minutes, goal_period, goal_type, goal_description, row.id);
+  res.json(courseEntry({
+    ...row, name, description, sprint_length_value, sprint_length_unit, focus_days_json,
+    url, notes, start_date, end_date, goal_minutes, goal_period, goal_type, goal_description,
+  }, lessonsForCourseStmt.all(row.id, row.id)));
+});
+
+// Progress toward the course's time-spent goal, windowed by goal_period:
+// 'custom' = all-time total, 'sprint' = this course's current active sprint's date
+// range, 'session' = the single most recent session, 'daily'/'weekly'/'monthly' =
+// a rolling window ending today. Sessions count toward a course only via their
+// sprint_id -> sprints.course_id chain (ad-hoc sessions with no sprint don't count
+// toward any course's goal -- there's nothing else linking them to one).
+router.get("/:id/goal-progress", (req, res) => {
+  const course = db.prepare("SELECT * FROM courses WHERE id = ? AND user_id = ?").get(req.params.id, req.user.id);
+  if (!course) return res.status(404).json({ error: "Not found." });
+  if (!course.goal_minutes) return res.json({ goalMinutes: null, spentMinutes: 0, periodLabel: null });
+  const sessionsRaw = db.prepare(`
+    SELECT sessions.date, sessions.actual_minutes_manual,
+      COALESCE((SELECT SUM(actual_minutes) FROM session_blocks WHERE session_blocks.session_id = sessions.id), 0) AS block_duration
+    FROM sessions JOIN sprints ON sprints.id = sessions.sprint_id
+    WHERE sprints.course_id = ? AND sessions.user_id = ?
+  `).all(course.id, req.user.id);
+  const minutesOf = (r) => (r.actual_minutes_manual != null ? r.actual_minutes_manual : r.block_duration);
+  const period = course.goal_period || "custom";
+  let spentMinutes = 0, periodLabel = period;
+  if (period === "custom") {
+    spentMinutes = sessionsRaw.reduce((s, r) => s + minutesOf(r), 0);
+    periodLabel = "all time";
+  } else if (period === "sprint") {
+    const sprint = db.prepare("SELECT * FROM sprints WHERE course_id = ? AND status = 'active'").get(course.id);
+    if (sprint) spentMinutes = sessionsRaw.filter((r) => r.date >= sprint.start_date && r.date <= sprint.end_date).reduce((s, r) => s + minutesOf(r), 0);
+    periodLabel = "this sprint";
+  } else if (period === "session") {
+    // (a.date < b.date ? 1 : -1) alone is non-transitive for ties (same-day sessions) --
+    // it reports a<b AND b<a simultaneously, which breaks the sort unpredictably rather
+    // than just "keeping original order." Needs an explicit 0 case.
+    const latest = [...sessionsRaw].sort((a, b) => (a.date < b.date ? 1 : a.date > b.date ? -1 : 0))[0];
+    spentMinutes = latest ? minutesOf(latest) : 0;
+    periodLabel = "most recent session";
+  } else {
+    const today = nowISO().slice(0, 10);
+    const from = period === "daily" ? today : period === "weekly" ? addDays(today, -6) : addDays(today, -29);
+    spentMinutes = sessionsRaw.filter((r) => r.date >= from && r.date <= today).reduce((s, r) => s + minutesOf(r), 0);
+  }
+  res.json({ goalMinutes: course.goal_minutes, spentMinutes: Math.round(spentMinutes), periodLabel });
 });
 
 router.delete("/:id", (req, res) => {

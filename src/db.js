@@ -434,6 +434,24 @@ No racist, sexist, or religious slurs — ZERO TOLERANCE.', '${new Date().toISOS
   ALTER TABLE users ADD COLUMN theme TEXT NOT NULL DEFAULT 'dark';
   ALTER TABLE users ADD COLUMN ui_mode TEXT NOT NULL DEFAULT 'auto';
   `,
+  // Course detail fields (issue #11): url/notes/dates are plain descriptive fields
+  // with no behavioral effect on the existing status/completed_at lifecycle --
+  // deliberately kept separate. "Indefinite" is just end_date IS NULL, same
+  // precedent as not needing a separate boolean anywhere else in this schema.
+  // Goal tracking: goal_period decides the window goal-progress is computed over
+  // ('custom' = all-time total, 'sprint' = current active sprint's date range,
+  // 'session' = the single most recent session, 'daily'/'weekly'/'monthly' = a
+  // rolling window ending today) -- see GET /courses/:id/goal-progress.
+  `
+  ALTER TABLE courses ADD COLUMN url TEXT;
+  ALTER TABLE courses ADD COLUMN notes TEXT;
+  ALTER TABLE courses ADD COLUMN start_date TEXT;
+  ALTER TABLE courses ADD COLUMN end_date TEXT;
+  ALTER TABLE courses ADD COLUMN goal_minutes INTEGER;
+  ALTER TABLE courses ADD COLUMN goal_period TEXT;
+  ALTER TABLE courses ADD COLUMN goal_type TEXT;
+  ALTER TABLE courses ADD COLUMN goal_description TEXT;
+  `,
 ];
 
 function runMigrations() {
