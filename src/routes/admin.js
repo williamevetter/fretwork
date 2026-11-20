@@ -133,6 +133,22 @@ router.patch("/users/:id", (req, res) => {
   if (clash) return res.status(400).json({ error: "Another account already uses that email." });
   db.prepare("UPDATE users SET email = ? WHERE id = ?").run(email, target.id);
   logAudit(req.user.id, "edit-user", target.id, { oldEmail: target.email, newEmail: email });
+  // Promoting/demoting to 'instructor' is a global-permissions change, not a scoped
+  // per-account action — restricted to real admins, same as the acceptance statement.
+  if (req.body?.role !== undefined) {
+    if (!isRealAdmin(req.user.id)) return res.status(403).json(ADMIN_ONLY);
+    const role = String(req.body.role);
+    db.prepare("UPDATE users SET role = ? WHERE id = ?").run(role, target.id);
+    logAudit(req.user.id, "change-role", target.id, { oldRole: target.role, newRole: role });
+    if (role === "instructor") {
+      const existing = db.prepare("SELECT id FROM forum_categories WHERE owner_user_id = ?").get(target.id);
+      if (!existing) {
+        const label = `${target.name || target.email.split("@")[0]}'s Class`;
+        db.prepare("INSERT INTO forum_categories (id, slug, label, owner_user_id, created_at) VALUES (?, ?, ?, ?, ?)")
+          .run(uid(), `instructor-${target.id}`, label, target.id, nowISO());
+      }
+    }
+  }
   res.json({ ok: true });
 });
 
@@ -168,6 +184,17 @@ router.delete("/users/:id", (req, res) => {
     db.prepare("DELETE FROM custom_tunings WHERE user_id = ?").run(target.id);
     db.prepare("DELETE FROM admin_notices WHERE user_id = ?").run(target.id);
     db.prepare("UPDATE admin_audit_log SET target_user_id = NULL WHERE target_user_id = ?").run(target.id);
+    db.prepare("DELETE FROM messages WHERE sender_id = ? OR recipient_id = ?").run(target.id, target.id);
+    db.prepare("DELETE FROM forum_replies WHERE user_id = ? OR thread_id IN (SELECT id FROM forum_threads WHERE user_id = ?)").run(target.id, target.id);
+    db.prepare("DELETE FROM forum_threads WHERE user_id = ?").run(target.id);
+    db.prepare("DELETE FROM enrollments WHERE instructor_id = ? OR student_id = ?").run(target.id, target.id);
+    // An owned category (they were an instructor) takes its threads/replies with it too.
+    const ownedCategory = db.prepare("SELECT id FROM forum_categories WHERE owner_user_id = ?").get(target.id);
+    if (ownedCategory) {
+      db.prepare("DELETE FROM forum_replies WHERE thread_id IN (SELECT id FROM forum_threads WHERE category_id = ?)").run(ownedCategory.id);
+      db.prepare("DELETE FROM forum_threads WHERE category_id = ?").run(ownedCategory.id);
+      db.prepare("DELETE FROM forum_categories WHERE id = ?").run(ownedCategory.id);
+    }
     db.prepare("DELETE FROM users WHERE id = ?").run(target.id);
     db.exec("COMMIT");
   } catch (e) {

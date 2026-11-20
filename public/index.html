@@ -151,6 +151,31 @@ const api = {
     remove: (id) => apiCall("DELETE", `/tunings/${id}`),
   },
   changelog: () => apiCall("GET", "/changelog"),
+  enrollments: {
+    invite: (email) => apiCall("POST", "/enrollments/invite", { email }),
+    sent: () => apiCall("GET", "/enrollments/sent"),
+    pending: () => apiCall("GET", "/enrollments/pending"),
+    accept: (id) => apiCall("POST", `/enrollments/${id}/accept`),
+    decline: (id) => apiCall("POST", `/enrollments/${id}/decline`),
+    students: () => apiCall("GET", "/enrollments/students"),
+    unenroll: (id) => apiCall("DELETE", `/enrollments/${id}`),
+    resetStudentPassword: (id) => apiCall("POST", `/enrollments/${id}/reset-student-password`),
+  },
+  forums: {
+    categories: () => apiCall("GET", "/forums/categories"),
+    threads: (categoryId) => apiCall("GET", `/forums/categories/${categoryId}/threads`),
+    createThread: (categoryId, body) => apiCall("POST", `/forums/categories/${categoryId}/threads`, body),
+    thread: (id) => apiCall("GET", `/forums/threads/${id}`),
+    reply: (id, body) => apiCall("POST", `/forums/threads/${id}/replies`, { body }),
+    removeThread: (id) => apiCall("DELETE", `/forums/threads/${id}`),
+    removeReply: (id) => apiCall("DELETE", `/forums/replies/${id}`),
+  },
+  messages: {
+    contacts: () => apiCall("GET", "/messages/contacts"),
+    list: () => apiCall("GET", "/messages"),
+    send: (body) => apiCall("POST", "/messages", body),
+    markRead: (id) => apiCall("POST", `/messages/${id}/read`),
+  },
 };
 </script>
 <script>
@@ -998,6 +1023,8 @@ const TABS = [
     { id: "calendar", label: "Calendar" },
     { id: "techniques", label: "Techniques" },
     { id: "topics", label: "Topics & Questions" },
+    { id: "forums", label: "Forums" },
+    { id: "messages", label: "Messages" },
     { id: "courses", label: "Course Material" },
     { id: "gear", label: "Gear" },
     { id: "theory", label: "Theory" },
@@ -1467,6 +1494,15 @@ function App({ me }) {
         api.notices.dismiss(pendingNotice.id).catch(() => {});
         setPendingNotice(null);
     };
+    const [pendingInvites, setPendingInvites] = useState([]);
+    const loadPendingInvites = () => { api.enrollments.pending().then(setPendingInvites).catch(() => {}); };
+    useEffect(loadPendingInvites, []);
+    const respondInvite = async (invite, accept) => {
+        try {
+            await (accept ? api.enrollments.accept(invite.id) : api.enrollments.decline(invite.id));
+            setPendingInvites((list) => list.filter((i) => i.id !== invite.id));
+        } catch (e) {}
+    };
     const [sessions, setSessions, sessionsReady] = useApiList(api.sessions.list);
     const [sprints, setSprints, sprintsReady] = useApiList(api.sprints.list);
     const [techniques, setTechniques, techniquesReady] = useApiList(api.techniques.list);
@@ -1539,6 +1575,14 @@ function App({ me }) {
                 color: tab === t.id ? "#1A1509" : C.inkDim,
                 background: tab === t.id ? C.brass : "transparent",
             } }, t.label))), E(UtilitiesNavItem, { tab: tab, setTab: setTab }), E(ToolsPanel, null),
+            me && me.role === "instructor" && E("button", {
+                onClick: () => setTab("instructor"),
+                style: {
+                    flexShrink: 0, fontFamily: FONT_BODY, fontSize: 13, fontWeight: 600, padding: "8px 13px",
+                    borderRadius: 7, border: "none", cursor: "pointer",
+                    color: tab === "instructor" ? "#1A1509" : C.inkDim, background: tab === "instructor" ? C.brass : "transparent",
+                },
+            }, "Instructor"),
             me && me.isAdmin && E("button", {
                 onClick: () => setTab("admin"),
                 style: {
@@ -1556,6 +1600,9 @@ function App({ me }) {
             tab === "calendar" && E(CalendarTab, { sessions: sessions, sprints: sprints, coursesIndex: coursesIndex, onEditSession: (id) => { setEditSessionId(id); setTab("sessions"); } }),
             tab === "techniques" && React.createElement(TechniquesTab, { sessions: sessions, techniques: techniques, setTechniques: setTechniques }),
             tab === "topics" && React.createElement(TopicsTab, { topics: topics, setTopics: setTopics, me: me }),
+            tab === "forums" && E(ForumsTab, null),
+            tab === "messages" && E(MessagesTab, null),
+            tab === "instructor" && me && me.role === "instructor" && E(InstructorTab, null),
             tab === "courses" && (React.createElement(CourseMaterialTab, { coursesIndex: coursesIndex, setCoursesIndex: setCoursesIndex, notes: notes, setNotes: setNotes, techniques: techniques })),
             tab === "gear" && React.createElement(GearTab, { gear: gear, setGear: setGear }),
             tab === "theory" && React.createElement(TheoryTab, { theory: theory, setTheory: setTheory }),
@@ -1570,7 +1617,13 @@ function App({ me }) {
             E("div", { style: { background: C.surfaceRaised, border: `1px solid ${C.line}`, borderRadius: 10, padding: 22, maxWidth: 380, boxShadow: "0 12px 32px rgba(0,0,0,0.5)" } },
                 E("div", { style: { fontFamily: FONT_MONO, fontSize: 11, color: C.brass, marginBottom: 8, letterSpacing: "0.04em" } }, "NOTICE"),
                 E("div", { style: { fontSize: 14, lineHeight: 1.5, marginBottom: 18 } }, pendingNotice.message),
-                E("button", { onClick: dismissNotice, style: { background: C.brass, color: "#1A1509", border: "none", borderRadius: 7, padding: "8px 16px", cursor: "pointer", fontFamily: FONT_BODY, fontSize: 13, fontWeight: 600 } }, "Got it")))));
+                E("button", { onClick: dismissNotice, style: { background: C.brass, color: "#1A1509", border: "none", borderRadius: 7, padding: "8px 16px", cursor: "pointer", fontFamily: FONT_BODY, fontSize: 13, fontWeight: 600 } }, "Got it"))),
+        pendingInvites.length > 0 && E("div", { style: { position: "fixed", bottom: 16, right: 16, display: "grid", gap: 8, zIndex: 1500 } },
+            pendingInvites.map((inv) => E("div", { key: inv.id, style: { background: C.surfaceRaised, border: `1px solid ${C.line}`, borderRadius: 10, padding: 14, maxWidth: 320, boxShadow: "0 12px 32px rgba(0,0,0,0.5)" } },
+                E("div", { style: { fontSize: 13, marginBottom: 10 } }, E("strong", null, inv.instructorName), " invited you to join their class."),
+                E("div", { style: { display: "flex", gap: 8 } },
+                    E("button", { onClick: () => respondInvite(inv, true), style: { background: C.brass, color: "#1A1509", border: "none", borderRadius: 6, padding: "5px 10px", cursor: "pointer", fontSize: 12, fontWeight: 600 } }, "Accept"),
+                    E("button", { onClick: () => respondInvite(inv, false), style: { background: "transparent", color: C.inkFaint, border: `1px solid ${C.line}`, borderRadius: 6, padding: "5px 10px", cursor: "pointer", fontSize: 12 } }, "Decline")))))));
 }
 /* ---------------------------------------------------------
    ADMIN DASHBOARD — owner-only. Per-user storage usage, impersonation for
@@ -1650,6 +1703,12 @@ function AdminDashboardTab({ me }) {
         try { await api.admin.requirePasswordChange(u.id); load(); flash(u.id, "Will be required on next login."); }
         catch (e) { setError(String(e)); }
     };
+    const toggleInstructor = async (u) => {
+        const newRole = u.role === "instructor" ? "user" : "instructor";
+        if (!window.confirm(`${newRole === "instructor" ? "Promote" : "Demote"} ${u.email} ${newRole === "instructor" ? "to" : "from"} instructor?`)) return;
+        try { await api.admin.updateUser(u.id, { email: u.email, role: newRole }); load(); }
+        catch (e) { setError(String(e)); }
+    };
     const startEdit = (u) => { setEditingId(u.id); setEditEmailDraft(u.email); };
     const cancelEdit = () => { setEditingId(null); setEditEmailDraft(""); };
     const saveEdit = async (u) => {
@@ -1700,6 +1759,7 @@ function AdminDashboardTab({ me }) {
                                     E("button", { onClick: () => startEdit(u), style: { background: "transparent", border: `1px solid ${C.line}`, color: C.inkDim, borderRadius: 5, padding: "3px 8px", cursor: "pointer", fontSize: 11 } }, "Edit"),
                                     E("button", { onClick: () => resetPassword(u), style: { background: "transparent", border: `1px solid ${C.rust}66`, color: C.rust, borderRadius: 5, padding: "3px 8px", cursor: "pointer", fontSize: 11 } }, "Reset password"),
                                     E("button", { onClick: () => requirePasswordChange(u), style: { background: "transparent", border: `1px solid ${C.rust}66`, color: C.rust, borderRadius: 5, padding: "3px 8px", cursor: "pointer", fontSize: 11 } }, "Force PW change"),
+                                    !isTestAdmin && (u.role === "user" || u.role === "instructor") && E("button", { onClick: () => toggleInstructor(u), style: { background: "transparent", border: `1px solid ${C.string}66`, color: C.string, borderRadius: 5, padding: "3px 8px", cursor: "pointer", fontSize: 11 } }, u.role === "instructor" ? "Demote from instructor" : "Make instructor"),
                                     E("button", { onClick: () => deleteUser(u), style: { background: C.rust, border: "none", color: "#1A1509", borderRadius: 5, padding: "3px 8px", cursor: "pointer", fontSize: 11, fontWeight: 700 } }, "Delete")),
                                 flashMsgs[u.id] && E("div", { style: { fontSize: 11, color: C.sage } }, flashMsgs[u.id]),
                                 resetResults[u.id] && E("div", { style: { fontFamily: FONT_MONO, fontSize: 11, background: C.bg2, border: `1px solid ${C.line}`, borderRadius: 5, padding: "4px 6px", userSelect: "all" } }, resetResults[u.id]),
@@ -3866,6 +3926,211 @@ function NeckQuizMode({ onBack }) {
         feedback && (React.createElement("div", { style: { display: "flex", justifyContent: "space-between", alignItems: "center", marginTop: 10 } },
             React.createElement("span", { style: { color: feedback === "right" ? C.sage : C.rust, fontSize: 13.5 } }, feedback === "right" ? "Correct." : `It's ${q.answer}.`),
             React.createElement(Btn, { onClick: nextQ }, "Next \u2192")))));
+}
+/* ---------------------------------------------------------
+   INSTRUCTOR — invite/accept students, view roster, reset a student's
+   password, unenroll. role === "instructor" gated, set by a real admin.
+--------------------------------------------------------- */
+function InstructorTab() {
+    const [students, setStudents] = useState(null);
+    const [sent, setSent] = useState([]);
+    const [inviteEmail, setInviteEmail] = useState("");
+    const [error, setError] = useState("");
+    const [flash, setFlash] = useState("");
+    const [resetResults, setResetResults] = useState({});
+    const load = () => {
+        api.enrollments.students().then(setStudents).catch((e) => setError(String(e)));
+        api.enrollments.sent().then(setSent).catch(() => {});
+    };
+    useEffect(load, []);
+    const sendInvite = async (e) => {
+        e.preventDefault();
+        setError(""); setFlash("");
+        try {
+            await api.enrollments.invite(inviteEmail.trim());
+            setInviteEmail("");
+            setFlash("Invite sent.");
+            load();
+        } catch (e) { setError(String(e)); }
+    };
+    const unenroll = async (s) => {
+        if (!window.confirm(`Unenroll ${s.name}? They'll stop showing up as one of your students.`)) return;
+        try { await api.enrollments.unenroll(s.enrollmentId); load(); }
+        catch (e) { setError(String(e)); }
+    };
+    const resetPw = async (s) => {
+        if (!window.confirm(`Send a password reset email to ${s.email}?`)) return;
+        try { await api.enrollments.resetStudentPassword(s.enrollmentId); setResetResults((r) => ({ ...r, [s.id]: "Sent." })); }
+        catch (e) { setError(String(e)); }
+    };
+    if (error) return E("div", { style: { color: C.rust, fontSize: 13 } }, error);
+    if (!students) return E("div", { style: { color: C.inkFaint, fontSize: 13 } }, "loading…");
+    return E("div", { style: { display: "grid", gap: 14 } },
+        E("h2", { style: { fontFamily: FONT_DISPLAY, fontSize: 19 } }, "Instructor"),
+        E(Card, null,
+            E(Label, null, "Invite a student"),
+            E("form", { onSubmit: sendInvite, style: { display: "flex", gap: 8 } },
+                E(Input, { type: "email", required: true, value: inviteEmail, onChange: (e) => setInviteEmail(e.target.value), placeholder: "student@example.com", style: { flex: 1 } }),
+                E(Btn, { type: "submit" }, "Send invite")),
+            flash && E("div", { style: { fontSize: 12.5, color: C.sage, marginTop: 8 } }, flash),
+            sent.length > 0 && E("div", { style: { marginTop: 12, paddingTop: 12, borderTop: `1px solid ${C.line}` } },
+                E(Label, null, "Pending invites"),
+                sent.map((s) => E("div", { key: s.id, style: { fontSize: 12.5, color: C.inkFaint, padding: "4px 0" } }, s.studentEmail)))),
+        E(Card, null,
+            E(Label, null, "Your students"),
+            students.length === 0 ? E(Empty, { text: "No students enrolled yet." }) : E("div", { style: { display: "grid", gap: 8 } },
+                students.map((s) => E("div", { key: s.id, style: { display: "flex", justifyContent: "space-between", alignItems: "center", padding: "8px 0", borderBottom: `1px solid ${C.line}` } },
+                    E("div", null,
+                        E("div", { style: { fontWeight: 600, fontSize: 14 } }, s.name),
+                        E("div", { style: { fontSize: 11.5, color: C.inkFaint } }, s.email)),
+                    E("div", { style: { display: "flex", gap: 6, alignItems: "center" } },
+                        resetResults[s.id] && E("span", { style: { fontSize: 11, color: C.sage } }, resetResults[s.id]),
+                        E("button", { onClick: () => resetPw(s), style: { background: "transparent", border: `1px solid ${C.rust}66`, color: C.rust, borderRadius: 5, padding: "3px 8px", cursor: "pointer", fontSize: 11 } }, "Reset password"),
+                        E("button", { onClick: () => unenroll(s), style: { background: "transparent", border: `1px solid ${C.line}`, color: C.inkFaint, borderRadius: 5, padding: "3px 8px", cursor: "pointer", fontSize: 11 } }, "Unenroll")))))));
+}
+/* ---------------------------------------------------------
+   FORUMS — fixed global categories plus one exclusive category per
+   instructor, auto-created when they're promoted (see admin.js).
+--------------------------------------------------------- */
+function ForumsTab() {
+    const [categories, setCategories] = useState(null);
+    const [categoryId, setCategoryId] = useState(null);
+    const [threads, setThreads] = useState(null);
+    const [threadId, setThreadId] = useState(null);
+    const [thread, setThread] = useState(null);
+    const [newThread, setNewThread] = useState({ title: "", body: "" });
+    const [replyBody, setReplyBody] = useState("");
+    const [error, setError] = useState("");
+    useEffect(() => {
+        api.forums.categories().then((cats) => {
+            setCategories(cats);
+            const postable = cats.filter((c) => c.canPost);
+            if (postable.length) setCategoryId(postable[0].id);
+        }).catch((e) => setError(String(e)));
+    }, []);
+    const loadThreads = (catId) => { setCategoryId(catId); setThreadId(null); setThread(null); api.forums.threads(catId).then(setThreads).catch((e) => setError(String(e))); };
+    useEffect(() => { if (categoryId) loadThreads(categoryId); }, [categoryId]);
+    const openThread = (id) => { setThreadId(id); api.forums.thread(id).then(setThread).catch((e) => setError(String(e))); };
+    const createThread = async (e) => {
+        e.preventDefault();
+        if (!newThread.title.trim() || !newThread.body.trim()) return;
+        try {
+            await api.forums.createThread(categoryId, { title: newThread.title.trim(), body: newThread.body.trim() });
+            setNewThread({ title: "", body: "" });
+            loadThreads(categoryId);
+        } catch (e) { setError(String(e)); }
+    };
+    const sendReply = async (e) => {
+        e.preventDefault();
+        if (!replyBody.trim()) return;
+        try { setThread(await api.forums.reply(threadId, replyBody.trim())); setReplyBody(""); loadThreads(categoryId); }
+        catch (e) { setError(String(e)); }
+    };
+    const removeThread = async () => {
+        if (!window.confirm("Delete this thread and all its replies?")) return;
+        await api.forums.removeThread(threadId); setThreadId(null); setThread(null); loadThreads(categoryId);
+    };
+    const removeReply = async (id) => { setThread(await api.forums.removeReply(id).then(() => api.forums.thread(threadId))); };
+    if (error) return E("div", { style: { color: C.rust, fontSize: 13 } }, error);
+    if (!categories) return E("div", { style: { color: C.inkFaint, fontSize: 13 } }, "loading…");
+    const postable = categories.filter((c) => c.canPost);
+    return E("div", { style: { display: "grid", gap: 14 } },
+        E("h2", { style: { fontFamily: FONT_DISPLAY, fontSize: 19 } }, "Forums"),
+        E("div", { style: { display: "flex", gap: 6, flexWrap: "wrap" } },
+            postable.map((c) => E("button", {
+                key: c.id, onClick: () => loadThreads(c.id),
+                style: { fontFamily: FONT_MONO, fontSize: 12, padding: "5px 11px", borderRadius: 20, cursor: "pointer", border: `1px solid ${categoryId === c.id ? C.brass : C.line}`, background: categoryId === c.id ? C.brass : "transparent", color: categoryId === c.id ? "#1A1509" : C.inkDim },
+            }, c.label))),
+        !threadId && E(Card, null,
+            E(Label, null, "New thread"),
+            E("form", { onSubmit: createThread, style: { display: "grid", gap: 8 } },
+                E(Input, { value: newThread.title, onChange: (e) => setNewThread({ ...newThread, title: e.target.value }), placeholder: "Title" }),
+                E(TextArea, { rows: 3, value: newThread.body, onChange: (e) => setNewThread({ ...newThread, body: e.target.value }), placeholder: "What's on your mind?" }),
+                E(Btn, { type: "submit" }, "Post thread"))),
+        !threadId && E(Card, null,
+            E(Label, null, "Threads"),
+            !threads ? E("div", { style: { color: C.inkFaint, fontSize: 13 } }, "loading…") :
+                threads.length === 0 ? E(Empty, { text: "No threads yet — be the first." }) :
+                    E("div", { style: { display: "grid", gap: 2 } }, threads.map((t) => E("div", {
+                        key: t.id, onClick: () => openThread(t.id),
+                        style: { display: "flex", justifyContent: "space-between", padding: "9px 0", borderBottom: `1px solid ${C.line}`, cursor: "pointer" },
+                    },
+                        E("div", null,
+                            E("div", { style: { fontWeight: 600, fontSize: 14 } }, t.title),
+                            E("div", { style: { fontSize: 11, color: C.inkFaint } }, "by ", t.author)),
+                        E("div", { style: { fontSize: 11, color: C.inkFaint } }, t.replyCount, " reply", t.replyCount === 1 ? "" : "s"))))),
+        threadId && thread && E(Card, null,
+            E(Btn, { variant: "ghost", onClick: () => { setThreadId(null); setThread(null); } }, "← Back to threads"),
+            E("div", { style: { marginTop: 10 } },
+                E("div", { style: { fontFamily: FONT_DISPLAY, fontSize: 17, fontWeight: 600 } }, thread.title),
+                E("div", { style: { fontSize: 11, color: C.inkFaint, marginBottom: 8 } }, "by ", thread.author),
+                E("div", { style: { fontSize: 14, lineHeight: 1.5, marginBottom: 6 } }, thread.body),
+                E("button", { onClick: removeThread, style: { background: "none", border: "none", color: C.rust, cursor: "pointer", fontSize: 11, padding: 0 } }, "Delete thread")),
+            E("div", { style: { borderTop: `1px solid ${C.line}`, margin: "14px 0" } }),
+            E("div", { style: { display: "grid", gap: 10 } }, thread.replies.map((r) => E("div", { key: r.id },
+                E("div", { style: { fontSize: 11, color: C.inkFaint } }, r.author, " · ", (r.createdAt || "").slice(0, 10)),
+                E("div", { style: { fontSize: 13.5, lineHeight: 1.5 } }, r.body),
+                E("button", { onClick: () => removeReply(r.id), style: { background: "none", border: "none", color: C.inkFaint, cursor: "pointer", fontSize: 10.5, padding: 0, marginTop: 2 } }, "Delete")))),
+            E("form", { onSubmit: sendReply, style: { marginTop: 12, display: "grid", gap: 8 } },
+                E(TextArea, { rows: 2, value: replyBody, onChange: (e) => setReplyBody(e.target.value), placeholder: "Write a reply…" }),
+                E(Btn, { type: "submit" }, "Reply"))));
+}
+/* ---------------------------------------------------------
+   MESSAGE BOARD — personal inbox. Contacts are always relationship-scoped
+   (instructor ↔ enrolled students, or an admin's existing visibility) —
+   never an open user directory.
+--------------------------------------------------------- */
+function MessagesTab() {
+    const [messages, setMessages] = useState(null);
+    const [contacts, setContacts] = useState([]);
+    const [compose, setCompose] = useState({ recipientIds: [], category: "general", body: "" });
+    const [error, setError] = useState("");
+    const [flash, setFlash] = useState("");
+    const load = () => { api.messages.list().then(setMessages).catch((e) => setError(String(e))); };
+    useEffect(() => { load(); api.messages.contacts().then(setContacts).catch(() => {}); }, []);
+    const toggleRecipient = (id) => setCompose((c) => ({ ...c, recipientIds: c.recipientIds.includes(id) ? c.recipientIds.filter((x) => x !== id) : [...c.recipientIds, id] }));
+    const selectAll = () => setCompose((c) => ({ ...c, recipientIds: contacts.map((ct) => ct.id) }));
+    const send = async (e) => {
+        e.preventDefault();
+        if (!compose.recipientIds.length || !compose.body.trim()) return;
+        try {
+            await api.messages.send({ recipientIds: compose.recipientIds, category: compose.category.trim() || "general", body: compose.body.trim() });
+            setCompose({ recipientIds: [], category: "general", body: "" });
+            setFlash("Sent.");
+            load();
+        } catch (e) { setError(String(e)); }
+    };
+    const markRead = async (m) => { if (m.direction === "received" && !m.readAt) { await api.messages.markRead(m.id); load(); } };
+    if (error) return E("div", { style: { color: C.rust, fontSize: 13 } }, error);
+    if (!messages) return E("div", { style: { color: C.inkFaint, fontSize: 13 } }, "loading…");
+    return E("div", { style: { display: "grid", gap: 14 } },
+        E("h2", { style: { fontFamily: FONT_DISPLAY, fontSize: 19 } }, "Messages"),
+        contacts.length === 0 ? E(Card, null, E("div", { style: { fontSize: 12.5, color: C.inkFaint } }, "You don't have anyone to message yet — that's based on an actual enrollment (instructor/student) relationship.")) :
+            E(Card, null,
+                E(Label, null, "New message"),
+                E("form", { onSubmit: send, style: { display: "grid", gap: 8 } },
+                    E("div", { style: { display: "flex", gap: 6, flexWrap: "wrap", alignItems: "center" } },
+                        contacts.map((c) => E("button", {
+                            key: c.id, type: "button", onClick: () => toggleRecipient(c.id),
+                            style: { fontFamily: FONT_MONO, fontSize: 11.5, padding: "4px 9px", borderRadius: 20, cursor: "pointer", border: `1px solid ${compose.recipientIds.includes(c.id) ? C.brass : C.line}`, background: compose.recipientIds.includes(c.id) ? C.brass : "transparent", color: compose.recipientIds.includes(c.id) ? "#1A1509" : C.inkDim },
+                        }, c.name)),
+                        contacts.length > 1 && E("button", { type: "button", onClick: selectAll, style: { background: "none", border: "none", color: C.brass, cursor: "pointer", fontSize: 11.5 } }, "Select all")),
+                    E(Input, { value: compose.category, onChange: (e) => setCompose({ ...compose, category: e.target.value }), placeholder: "Category (optional)", style: { maxWidth: 200 } }),
+                    E(TextArea, { rows: 3, value: compose.body, onChange: (e) => setCompose({ ...compose, body: e.target.value }), placeholder: "Message…" }),
+                    E(Btn, { type: "submit" }, "Send")),
+                flash && E("div", { style: { fontSize: 12.5, color: C.sage, marginTop: 8 } }, flash)),
+        E(Card, null,
+            E(Label, null, "Inbox"),
+            messages.length === 0 ? E(Empty, { text: "No messages yet." }) : E("div", { style: { display: "grid", gap: 2 } },
+                messages.map((m) => E("div", {
+                    key: m.id, onClick: () => markRead(m),
+                    style: { display: "flex", justifyContent: "space-between", padding: "8px 0", borderBottom: `1px solid ${C.line}`, cursor: m.direction === "received" && !m.readAt ? "pointer" : "default" },
+                },
+                    E("div", null,
+                        E("div", { style: { fontSize: 13, fontWeight: m.direction === "received" && !m.readAt ? 700 : 400 } },
+                            m.direction === "sent" ? "To " : "From ", m.otherParty, " · ", E("span", { style: { color: C.inkFaint, fontWeight: 400 } }, m.category)),
+                        E("div", { style: { fontSize: 12.5, color: C.inkDim, marginTop: 2 } }, m.body)),
+                    E("div", { style: { fontSize: 10.5, color: C.inkFaint, flexShrink: 0, marginLeft: 10 } }, (m.createdAt || "").slice(0, 10)))))));
 }
 /* ---------------------------------------------------------
    COURSE MATERIAL — courses, uploaded lessons, reader, notes index

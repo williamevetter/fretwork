@@ -367,6 +367,67 @@ No racist, sexist, or religious slurs — ZERO TOLERANCE.', '${new Date().toISOS
   );
   CREATE INDEX idx_course_checkups_course ON course_checkups(course_id);
   `,
+  // Instructor accounts (role='instructor', a new value for the existing free-text
+  // column — no schema change needed for that part), Forums, and the Message Board.
+  // No open user directory anywhere here: messaging/forum-category access is always
+  // resolved through an actual enrollment relationship, never a general lookup.
+  `
+  CREATE TABLE enrollments (
+    id TEXT PRIMARY KEY,
+    instructor_id TEXT NOT NULL REFERENCES users(id),
+    student_id TEXT NOT NULL REFERENCES users(id),
+    status TEXT NOT NULL DEFAULT 'pending',
+    created_at TEXT NOT NULL,
+    responded_at TEXT
+  );
+  CREATE UNIQUE INDEX idx_enrollments_pair ON enrollments(instructor_id, student_id);
+  CREATE INDEX idx_enrollments_student ON enrollments(student_id);
+
+  CREATE TABLE forum_categories (
+    id TEXT PRIMARY KEY,
+    slug TEXT NOT NULL UNIQUE,
+    label TEXT NOT NULL,
+    owner_user_id TEXT REFERENCES users(id),
+    created_at TEXT NOT NULL
+  );
+  INSERT INTO forum_categories (id, slug, label, created_at) VALUES
+    ('faq-cat', 'faq', 'FAQs', '${new Date().toISOString()}'),
+    ('help-tech-cat', 'help-technical', 'Help Needed (technical)', '${new Date().toISOString()}'),
+    ('help-music-cat', 'help-musical', 'Help Needed (musical)', '${new Date().toISOString()}');
+
+  CREATE TABLE forum_threads (
+    id TEXT PRIMARY KEY,
+    category_id TEXT NOT NULL REFERENCES forum_categories(id),
+    user_id TEXT NOT NULL REFERENCES users(id),
+    title TEXT NOT NULL,
+    body TEXT NOT NULL,
+    created_at TEXT NOT NULL
+  );
+  CREATE INDEX idx_forum_threads_category ON forum_threads(category_id);
+
+  CREATE TABLE forum_replies (
+    id TEXT PRIMARY KEY,
+    thread_id TEXT NOT NULL REFERENCES forum_threads(id),
+    user_id TEXT NOT NULL REFERENCES users(id),
+    body TEXT NOT NULL,
+    created_at TEXT NOT NULL
+  );
+  CREATE INDEX idx_forum_replies_thread ON forum_replies(thread_id);
+
+  CREATE TABLE messages (
+    id TEXT PRIMARY KEY,
+    sender_id TEXT NOT NULL REFERENCES users(id),
+    recipient_id TEXT NOT NULL REFERENCES users(id),
+    category TEXT NOT NULL DEFAULT 'general',
+    body TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    read_at TEXT
+  );
+  CREATE INDEX idx_messages_recipient ON messages(recipient_id);
+  CREATE INDEX idx_messages_sender ON messages(sender_id);
+
+  ALTER TABLE users ADD COLUMN notify_new_message INTEGER NOT NULL DEFAULT 1;
+  `,
 ];
 
 function runMigrations() {
