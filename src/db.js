@@ -1,6 +1,8 @@
 const fs = require("fs");
 const path = require("path");
 const { DatabaseSync } = require("node:sqlite");
+const { uid, nowISO } = require("./ids");
+const { addDays, sprintLengthDays } = require("./sprintLogic");
 
 const DATA_DIR = path.join(__dirname, "..", "data");
 const DB_FILE = path.join(DATA_DIR, "fretwork.sqlite");
@@ -475,18 +477,79 @@ No racist, sexist, or religious slurs — ZERO TOLERANCE.', '${new Date().toISOS
   );
   CREATE INDEX idx_sbl_lesson ON session_block_lessons(lesson_id);
   `,
+  // Issue #17: course materials become optionally standalone (not tied to any
+  // course). lessons.course_id has no DROP-NOT-NULL in SQLite, so widening it
+  // requires a rebuild -- the first rebuild-shaped migration this schema has had,
+  // but lossless: every row/column value (including id, so notes.lesson_id /
+  // lesson_courses.lesson_id / technique_assignments / session_block_lessons are
+  // all unaffected) is carried over as-is. Also adds lessons.user_id, backfilled
+  // from the lesson's current course -- ownership becomes direct instead of
+  // transitive through a course that may no longer exist, fixing three separate
+  // spots (tags.js ownsScope, admin.js storage stats + user-delete cascade) that
+  // would otherwise silently miss a standalone lesson.
+  `
+  CREATE TABLE lessons_new (
+    id TEXT PRIMARY KEY,
+    course_id TEXT REFERENCES courses(id),
+    user_id TEXT NOT NULL REFERENCES users(id),
+    title TEXT NOT NULL,
+    file_type TEXT NOT NULL,
+    file_name TEXT,
+    uploaded_date TEXT,
+    html TEXT,
+    text TEXT,
+    data_url TEXT,
+    sort_order INTEGER NOT NULL DEFAULT 0
+  );
+  INSERT INTO lessons_new (id, course_id, user_id, title, file_type, file_name, uploaded_date, html, text, data_url, sort_order)
+    SELECT id, course_id, (SELECT user_id FROM courses WHERE courses.id = lessons.course_id),
+      title, file_type, file_name, uploaded_date, html, text, data_url, sort_order FROM lessons;
+  DROP TABLE lessons;
+  ALTER TABLE lessons_new RENAME TO lessons;
+  CREATE INDEX idx_lessons_course ON lessons(course_id);
+  CREATE INDEX idx_lessons_user ON lessons(user_id);
+  `,
+  // Issue #17: "General" becomes a real, per-user course row instead of a
+  // course_id IS NULL bucket, and every session always ends up pointed at some
+  // sprint (no more fully sprint-less sessions). The courses/sprints half of
+  // this is plain SQL; the sessions half needs "find or create this user's
+  // active General sprint" branching logic, so this whole entry is a function
+  // rather than a SQL string (runMigrations() below supports both).
+  () => {
+    db.exec(`
+      INSERT INTO courses (id, user_id, name, description, sprint_length_value, sprint_length_unit)
+        SELECT 'general-' || id, id, 'General', '', 2, 'week' FROM users
+        WHERE NOT EXISTS (SELECT 1 FROM courses WHERE courses.user_id = users.id AND courses.name = 'General');
+      UPDATE sprints SET course_id = 'general-' || user_id WHERE course_id IS NULL;
+    `);
+    const orphanSessions = db.prepare("SELECT id, user_id FROM sessions WHERE sprint_id IS NULL").all();
+    orphanSessions.forEach((s) => {
+      const generalCourseId = "general-" + s.user_id;
+      let sprint = db.prepare("SELECT id FROM sprints WHERE user_id = ? AND course_id = ? AND status = 'active'").get(s.user_id, generalCourseId);
+      if (!sprint) {
+        const startDate = nowISO().slice(0, 10);
+        const endDate = addDays(startDate, sprintLengthDays(2, "week") - 1);
+        const newId = uid();
+        db.prepare("INSERT INTO sprints (id, user_id, start_date, end_date, status, course_id) VALUES (?, ?, ?, ?, 'active', ?)")
+          .run(newId, s.user_id, startDate, endDate, generalCourseId);
+        sprint = { id: newId };
+      }
+      db.prepare("UPDATE sessions SET sprint_id = ? WHERE id = ?").run(sprint.id, s.id);
+    });
+  },
 ];
 
 function runMigrations() {
   db.exec("CREATE TABLE IF NOT EXISTS schema_migrations (version INTEGER PRIMARY KEY, applied_at TEXT NOT NULL)");
   const appliedRows = db.prepare("SELECT version FROM schema_migrations").all();
   const applied = new Set(appliedRows.map((r) => r.version));
-  MIGRATIONS.forEach((sql, i) => {
+  MIGRATIONS.forEach((entry, i) => {
     const version = i + 1;
     if (applied.has(version)) return;
     db.exec("BEGIN");
     try {
-      db.exec(sql);
+      if (typeof entry === "function") entry();
+      else db.exec(entry);
       db.prepare("INSERT INTO schema_migrations (version, applied_at) VALUES (?, ?)").run(version, new Date().toISOString());
       db.exec("COMMIT");
     } catch (e) {

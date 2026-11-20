@@ -4,8 +4,9 @@ const path = require("path");
 const { db } = require("../db");
 const { uid, nowISO } = require("../ids");
 const requireAuth = require("../middleware");
-const { CATEGORIES, addDays } = require("../sprintLogic");
+const { CATEGORIES, addDays, sprintLengthDays } = require("../sprintLogic");
 const { syncSessionInheritance } = require("../techniqueAssignments");
+const { ensureGeneralCourse, ensureDefaultSprintId } = require("../courseSprintDefaults");
 
 const RECORDINGS_DIR = path.join(__dirname, "..", "..", "data", "recordings");
 if (!fs.existsSync(RECORDINGS_DIR)) fs.mkdirSync(RECORDINGS_DIR, { recursive: true });
@@ -109,9 +110,18 @@ router.get("/", (req, res) => {
 router.post("/", (req, res) => {
   const date = req.body?.date;
   if (!date) return res.status(400).json({ error: "date is required." });
+  // Every session always ends up pointed at some sprint (issue #17) -- default
+  // to the user's General course's active sprint when the client doesn't name one.
+  let sprint_id = req.body?.sprintId || null;
+  if (sprint_id) {
+    const owned = db.prepare("SELECT id FROM sprints WHERE id = ? AND user_id = ?").get(sprint_id, req.user.id);
+    if (!owned) return res.status(404).json({ error: "Sprint not found." });
+  } else {
+    sprint_id = ensureDefaultSprintId(req.user.id);
+  }
   const now = nowISO();
   const row = {
-    id: uid(), date, sprint_id: req.body?.sprintId || null, notes: req.body?.notes || "",
+    id: uid(), date, sprint_id, notes: req.body?.notes || "",
     is_ad_hoc: req.body?.isAdHoc ? 1 : 0,
     planned_minutes: req.body?.plannedMinutes != null ? Number(req.body.plannedMinutes) : null,
     actual_minutes_manual: req.body?.actualMinutesManual != null ? Number(req.body.actualMinutesManual) : null,
@@ -134,7 +144,18 @@ router.patch("/:id", (req, res) => {
   if (!row) return res.status(404).json({ error: "Not found." });
   const notes = req.body?.notes !== undefined ? req.body.notes : row.notes;
   const date = req.body?.date !== undefined ? req.body.date : row.date;
-  const sprint_id = req.body?.sprintId !== undefined ? req.body.sprintId : row.sprint_id;
+  let sprint_id = row.sprint_id;
+  if (req.body?.sprintId !== undefined) {
+    if (req.body.sprintId) {
+      const owned = db.prepare("SELECT id FROM sprints WHERE id = ? AND user_id = ?").get(req.body.sprintId, req.user.id);
+      if (!owned) return res.status(404).json({ error: "Sprint not found." });
+      sprint_id = req.body.sprintId;
+    } else {
+      // Every session always has a sprint (issue #17) -- an explicit null falls
+      // back to the user's General course's active sprint, same as on create.
+      sprint_id = ensureDefaultSprintId(req.user.id);
+    }
+  }
   const is_ad_hoc = req.body?.isAdHoc !== undefined ? (req.body.isAdHoc ? 1 : 0) : row.is_ad_hoc;
   const planned_minutes = req.body?.plannedMinutes !== undefined ? (req.body.plannedMinutes != null ? Number(req.body.plannedMinutes) : null) : row.planned_minutes;
   const actual_minutes_manual = req.body?.actualMinutesManual !== undefined ? (req.body.actualMinutesManual != null ? Number(req.body.actualMinutesManual) : null) : row.actual_minutes_manual;

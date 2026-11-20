@@ -4,6 +4,7 @@ const { uid, nowISO } = require("../ids");
 const requireAuth = require("../middleware");
 const { CATEGORY_RANK, addDays, sprintLengthDays } = require("../sprintLogic");
 const { inheritForNewSprint } = require("../techniqueAssignments");
+const { ensureGeneralCourse } = require("../courseSprintDefaults");
 
 const router = express.Router();
 router.use(requireAuth);
@@ -26,16 +27,14 @@ function sprintRow(row, queueRows) {
     carriedFromSprintId: row.carried_from_sprint_id, queue: queue.map(queueItemRow),
   };
 }
-// No courseId ("general" sprint) keeps today's hardcoded 14-day length exactly;
-// a course-linked sprint uses that course's own configurable cadence.
+// Every sprint always belongs to a real course now (General included, issue
+// #17) -- cadence always comes from that course's own configurable value/unit.
 function computeEndDate(courseId, startDate) {
-  if (!courseId) return addDays(startDate, 13);
   const course = db.prepare("SELECT sprint_length_value, sprint_length_unit FROM courses WHERE id = ?").get(courseId);
   if (!course) return addDays(startDate, 13);
   return addDays(startDate, sprintLengthDays(course.sprint_length_value, course.sprint_length_unit) - 1);
 }
-// courseId=null is its own bucket ("general" sprints) — at most one active sprint
-// per (user, course-or-general) at a time.
+// At most one active sprint per (user, course) at a time.
 function hasActiveSprintForCourse(userId, courseId, excludeSprintId) {
   let sql = "SELECT id FROM sprints WHERE user_id = ? AND status = 'active' AND course_id " + (courseId ? "= ?" : "IS NULL");
   const params = courseId ? [userId, courseId] : [userId];
@@ -56,10 +55,13 @@ router.get("/", (req, res) => {
 router.post("/", (req, res) => {
   const startDate = req.body?.startDate;
   if (!startDate) return res.status(400).json({ error: "startDate is required." });
-  const courseId = req.body?.courseId || null;
+  let courseId = req.body?.courseId || null;
   if (courseId) {
     const course = db.prepare("SELECT id FROM courses WHERE id = ? AND user_id = ?").get(courseId, req.user.id);
     if (!course) return res.status(404).json({ error: "Course not found." });
+  } else {
+    // Every sprint always belongs to a real course now (issue #17).
+    courseId = ensureGeneralCourse(req.user.id).id;
   }
   if (hasActiveSprintForCourse(req.user.id, courseId, null)) {
     return res.status(400).json({ error: activeSprintConflictMessage(courseId) });
@@ -83,8 +85,13 @@ router.patch("/:id", (req, res) => {
   if (status === "active" && row.status !== "active" && hasActiveSprintForCourse(req.user.id, row.course_id, row.id)) {
     return res.status(400).json({ error: activeSprintConflictMessage(row.course_id) });
   }
-  db.prepare("UPDATE sprints SET status = ? WHERE id = ?").run(status, row.id);
-  res.json(sprintRow({ ...row, status }, queueStmt.all(row.id)));
+  // Backfilling a missed session can mean correcting a past sprint's own dates
+  // (issue #17) -- start_date/end_date were previously immutable after creation.
+  const start_date = req.body?.startDate !== undefined ? req.body.startDate : row.start_date;
+  const end_date = req.body?.endDate !== undefined ? req.body.endDate : row.end_date;
+  if (end_date < start_date) return res.status(400).json({ error: "End date can't be before start date." });
+  db.prepare("UPDATE sprints SET status = ?, start_date = ?, end_date = ? WHERE id = ?").run(status, start_date, end_date, row.id);
+  res.json(sprintRow({ ...row, status, start_date, end_date }, queueStmt.all(row.id)));
 });
 
 // Ends a sprint and starts the next one, cloning only the checked incomplete items

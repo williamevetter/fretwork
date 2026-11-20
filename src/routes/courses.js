@@ -2,6 +2,7 @@ const express = require("express");
 const { db } = require("../db");
 const { uid, nowISO } = require("../ids");
 const { addDays } = require("../sprintLogic");
+const { ensureGeneralCourse } = require("../courseSprintDefaults");
 const requireAuth = require("../middleware");
 
 const router = express.Router();
@@ -157,6 +158,7 @@ router.get("/:id/goal-progress", (req, res) => {
 router.delete("/:id", (req, res) => {
   const course = db.prepare("SELECT * FROM courses WHERE id = ? AND user_id = ?").get(req.params.id, req.user.id);
   if (!course) return res.status(404).json({ error: "Not found." });
+  if (course.name === "General") return res.status(400).json({ error: "The General course can't be deleted." });
   db.exec("BEGIN");
   try {
     const lessonIds = db.prepare("SELECT id FROM lessons WHERE course_id = ?").all(course.id).map((l) => l.id);
@@ -174,11 +176,20 @@ router.delete("/:id", (req, res) => {
       db.prepare(`DELETE FROM session_block_lessons WHERE lesson_id IN (${placeholders})`).run(...lessonIds);
     }
     db.prepare("DELETE FROM lessons WHERE course_id = ?").run(course.id);
-    // Sprints that belonged to this course are detached ("general"), not deleted —
-    // their sessions/history stay intact. sprints.course_id REFERENCES courses(id)
-    // with no ON DELETE, so without this the course delete below would fail outright
-    // under PRAGMA foreign_keys=ON whenever the course had ever had a sprint.
-    db.prepare("UPDATE sprints SET course_id = NULL WHERE course_id = ?").run(course.id);
+    // Sprints that belonged to this course are reassigned to the user's General
+    // course, not deleted — their sessions/history stay intact, and every sprint
+    // always belongs to a real course now (issue #17). sprints.course_id
+    // REFERENCES courses(id) with no ON DELETE, so without this the course delete
+    // below would fail outright under PRAGMA foreign_keys=ON whenever the course
+    // had ever had a sprint. If one of them was active, demote it to completed
+    // rather than leaving General with two active sprints at once.
+    const generalCourseId = ensureGeneralCourse(req.user.id).id;
+    const orphanedSprints = db.prepare("SELECT id, status FROM sprints WHERE course_id = ?").all(course.id);
+    const generalActive = db.prepare("SELECT id FROM sprints WHERE course_id = ? AND status = 'active'").get(generalCourseId);
+    orphanedSprints.forEach((sp) => {
+      const newStatus = sp.status === "active" && generalActive ? "completed" : sp.status;
+      db.prepare("UPDATE sprints SET course_id = ?, status = ? WHERE id = ?").run(generalCourseId, newStatus, sp.id);
+    });
     // Any tags inherited from this course (on those now-detached sprints or their
     // sessions) no longer have a source — drop them along with the course's own tag.
     db.prepare("DELETE FROM technique_assignments WHERE inherited_from = ?").run(`course:${course.id}`);
