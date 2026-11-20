@@ -1885,6 +1885,26 @@ function RangePicker({ presets, preset, setPreset, customFrom, setCustomFrom, cu
 /* ---------------------------------------------------------
    DASHBOARD
 --------------------------------------------------------- */
+const CHART_PALETTE = [C.brass, C.sage, C.rust, C.string, C.brassDim];
+function PieChart({ slices }) {
+    const total = slices.reduce((s, d) => s + d.minutes, 0);
+    if (!total) return E(Empty, { text: "No time logged in this range yet." });
+    let acc = 0;
+    const stops = slices.map((d, i) => {
+        const from = (acc / total) * 100;
+        acc += d.minutes;
+        const to = (acc / total) * 100;
+        return `${CHART_PALETTE[i % CHART_PALETTE.length]} ${from}% ${to}%`;
+    }).join(", ");
+    return E("div", { style: { display: "flex", gap: 14, alignItems: "center", flexWrap: "wrap" } },
+        E("div", { style: { width: 96, height: 96, borderRadius: "50%", background: `conic-gradient(${stops})`, flexShrink: 0 } }),
+        E("div", { style: { display: "grid", gap: 4, flex: 1, minWidth: 130 } },
+            slices.map((d, i) => E("div", { key: d.label, style: { display: "flex", justifyContent: "space-between", gap: 8, fontSize: 11.5 } },
+                E("span", { style: { display: "flex", alignItems: "center", gap: 6, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" } },
+                    E("span", { style: { width: 8, height: 8, borderRadius: 2, background: CHART_PALETTE[i % CHART_PALETTE.length], flexShrink: 0, display: "inline-block" } }),
+                    d.label),
+                E("span", { style: { color: C.inkFaint, fontFamily: FONT_MONO, flexShrink: 0 } }, Math.round((d.minutes / total) * 100), "%")))));
+}
 function Dashboard({ data, setTab, sprints, coursesIndex }) {
     const activeSprints = activeSprintsByCourse(sprints);
     const [rangePreset, setRangePreset] = useState(() => (activeSprintForCourse(sprints, null) ? "thisSprint" : "allTime"));
@@ -1910,6 +1930,44 @@ function Dashboard({ data, setTab, sprints, coursesIndex }) {
     const techRows = data.techniques
         .map((t) => ({ ...t, min: techTotals[t.id] || 0 }))
         .sort((a, b) => b.min - a.min);
+    // Breakdown pies all use the same date-range-filtered sessions as the stats above,
+    // for consistency with "Total practiced" etc.
+    const sprintBreakdown = (() => {
+        const buckets = {};
+        filtered.forEach((s) => {
+            const key = s.sprintId || "__none__";
+            if (!buckets[key]) {
+                const sp = s.sprintId ? sprints.find((x) => x.id === s.sprintId) : null;
+                const course = sp && sp.courseId ? (coursesIndex || []).find((c) => c.id === sp.courseId) : null;
+                buckets[key] = { label: !s.sprintId ? "No sprint" : course ? course.name : "General sprint", minutes: 0 };
+            }
+            buckets[key].minutes += s.duration;
+        });
+        return Object.values(buckets).sort((a, b) => b.minutes - a.minutes);
+    })();
+    const courseBreakdown = (() => {
+        const buckets = {};
+        filtered.forEach((s) => {
+            const sp = s.sprintId ? sprints.find((x) => x.id === s.sprintId) : null;
+            const course = sp && sp.courseId ? (coursesIndex || []).find((c) => c.id === sp.courseId) : null;
+            const key = course ? course.id : "__none__";
+            if (!buckets[key]) buckets[key] = { label: course ? course.name : "No course", minutes: 0 };
+            buckets[key].minutes += s.duration;
+        });
+        return Object.values(buckets).sort((a, b) => b.minutes - a.minutes);
+    })();
+    const techBreakdown = techRows.filter((t) => t.min > 0).map((t) => ({ label: t.name, minutes: t.min }));
+    const exerciseTotals = {};
+    filtered.forEach((s) => {
+        (s.blocks || []).forEach((b) => {
+            if (!b.material) return;
+            exerciseTotals[b.material] = (exerciseTotals[b.material] || 0) + (Number(b.actualMinutes) || 0);
+        });
+    });
+    const top5Exercises = Object.entries(exerciseTotals)
+        .map(([material, min]) => ({ material, min }))
+        .sort((a, b) => b.min - a.min)
+        .slice(0, 5);
     const openTopics = data.topics.filter((t) => t.status === "open").length;
     const upcomingPlans = data.plans.filter((p) => p.date >= todayISO()).slice(0, 3);
     const recent = [...data.sessions].sort((a, b) => (a.date < b.date ? 1 : -1)).slice(0, 4);
@@ -1940,6 +1998,11 @@ function Dashboard({ data, setTab, sprints, coursesIndex }) {
             const done = sp.queue.filter((q) => q.completed).length;
             const total = sp.queue.length;
             const daysLeft = Math.max(0, Math.ceil((new Date(sp.endDate) - new Date(todayISO())) / 86400000));
+            // Lifetime stats for THIS sprint specifically -- independent of the dashboard's
+            // own date-range picker above, since "per sprint" means the sprint's own span.
+            const sprintSessions = data.sessions.filter((s) => s.sprintId === sp.id);
+            const sprintTotalMin = sprintSessions.reduce((s, x) => s + x.duration, 0);
+            const sprintAvgMin = sprintSessions.length ? sprintTotalMin / sprintSessions.length : 0;
             return E(Card, { key: sp.id },
                 E("div", { style: { display: "flex", justifyContent: "space-between", alignItems: "baseline" } },
                     E(Label, null, "Active sprint — ", course ? course.name : "General"),
@@ -1948,6 +2011,16 @@ function Dashboard({ data, setTab, sprints, coursesIndex }) {
                 E("div", { style: { display: "flex", justifyContent: "space-between", alignItems: "center", marginTop: 6 } },
                     E("span", { style: { fontSize: 13.5 } }, total === 0 ? "Queue is empty." : `${done} / ${total} queue items complete`),
                     E("span", { style: { fontFamily: FONT_MONO, fontSize: 12, color: C.brass } }, daysLeft, " day", daysLeft === 1 ? "" : "s", " left")),
+                E("div", { style: { display: "flex", gap: 14, marginTop: 10, paddingTop: 10, borderTop: `1px solid ${C.line}`, flexWrap: "wrap" } },
+                    E("div", null,
+                        E("div", { style: { fontFamily: FONT_MONO, fontSize: 9.5, color: C.inkFaint, textTransform: "uppercase" } }, "Total practiced"),
+                        E("div", { style: { fontSize: 14, fontWeight: 600 } }, fmtMin(sprintTotalMin))),
+                    E("div", null,
+                        E("div", { style: { fontFamily: FONT_MONO, fontSize: 9.5, color: C.inkFaint, textTransform: "uppercase" } }, "Avg / session"),
+                        E("div", { style: { fontSize: 14, fontWeight: 600 } }, fmtMin(Math.round(sprintAvgMin)))),
+                    E("div", null,
+                        E("div", { style: { fontFamily: FONT_MONO, fontSize: 9.5, color: C.inkFaint, textTransform: "uppercase" } }, "Sessions logged"),
+                        E("div", { style: { fontSize: 14, fontWeight: 600 } }, sprintSessions.length))),
                 E("div", { style: { marginTop: 10 } }, E(Btn, { variant: "ghost", onClick: () => setTab("sprints") }, "Open Sprints →")));
         }),
         React.createElement(Card, null,
@@ -1963,6 +2036,16 @@ function Dashboard({ data, setTab, sprints, coursesIndex }) {
                             height: "100%",
                             borderRadius: 4,
                         } })))))))),
+        E("div", { style: { display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(220px,1fr))", gap: 12 } },
+            E(Card, null, E(Label, null, "Sprint breakdown"), E(PieChart, { slices: sprintBreakdown })),
+            E(Card, null, E(Label, null, "Course breakdown"), E(PieChart, { slices: courseBreakdown })),
+            E(Card, null, E(Label, null, "Technique breakdown"), E(PieChart, { slices: techBreakdown }))),
+        E(Card, null,
+            E(Label, null, "Top 5 logged exercises"),
+            top5Exercises.length === 0 ? E(Empty, { text: "No time logged in this range yet." }) : E("div", { style: { display: "grid", gap: 8, marginTop: 4 } },
+                top5Exercises.map((x, i) => E("div", { key: x.material, style: { display: "flex", justifyContent: "space-between", fontSize: 13, padding: "5px 0", borderBottom: i < top5Exercises.length - 1 ? `1px solid ${C.line}` : "none" } },
+                    E("span", null, E("span", { style: { color: C.inkFaint, fontFamily: FONT_MONO, marginRight: 8 } }, i + 1, "."), x.material),
+                    E("span", { style: { fontFamily: FONT_MONO, color: C.brass } }, fmtMin(x.min)))))),
         React.createElement("div", { style: { display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 } },
             React.createElement(Card, null,
                 React.createElement(Label, null, "Upcoming planned sessions"),
