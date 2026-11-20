@@ -131,3 +131,8 @@ The resizable wrapper added in v11 gave PDF/YouTube content zero padding, so the
 *Significant*
 
 Added a small version badge to the header (read straight from this file, so there's no separate version constant to keep in sync) that opens a Changelog modal mirroring these release notes exactly — same file, parsed into entries, newest first. The modal also links out to reporting a bug or idea, by email or by opening a new GitHub issue.
+
+## v12 — Instructor accounts, Forums, Message Board
+*Major*
+
+A real admin can promote a user to an instructor, who can then invite students (pending → accept/decline), view their roster, reset a student's password, and unenroll them — each instructor also gets their own exclusive forum category, auto-created on promotion. Forums got three global categories (FAQs, Help Needed technical/musical) open to everyone, with threads and replies. A new Message Board gives every account a personal inbox — contacts are always resolved through an actual relationship (your enrolled instructor, an instructor's own students, or an admin's existing visibility), never an open user directory. CAPTCHA/anti-spam on these forms is deferred pending provider access (tracked separately); so is "assign curriculum to a student" and SMS mass messaging.
