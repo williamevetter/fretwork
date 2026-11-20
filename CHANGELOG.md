@@ -136,3 +136,8 @@ Added a small version badge to the header (read straight from this file, so ther
 *Major*
 
 A real admin can promote a user to an instructor, who can then invite students (pending → accept/decline), view their roster, reset a student's password, and unenroll them — each instructor also gets their own exclusive forum category, auto-created on promotion. Forums got three global categories (FAQs, Help Needed technical/musical) open to everyone, with threads and replies. A new Message Board gives every account a personal inbox — contacts are always resolved through an actual relationship (your enrolled instructor, an instructor's own students, or an admin's existing visibility), never an open user directory. CAPTCHA/anti-spam on these forms is deferred pending provider access (tracked separately); so is "assign curriculum to a student" and SMS mass messaging.
+
+## v13 — Responsive interface, color schemes, Course Material & Techniques merge
+*Major*
+
+Real CSS breakpoints now adapt the nav/header/main layout to phone/tablet/computer screen widths, with a per-account "Interface" setting that can force a specific one regardless of actual screen size. Added a light color theme alongside the existing dark default, switchable per-account — every color became a CSS variable lookup so switching is instant with no reload. Course Material and Techniques are now one nav entry with a sub-tab switcher between them (navigation only; the two stayed fully separate underneath). Also: "make courses optionally indefinite" turned out to already be true since v11's course-lifecycle work — nothing needed building there.
