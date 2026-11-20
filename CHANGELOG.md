@@ -151,3 +151,8 @@ The course detail view gained a Details card (editable description, a URL field,
 *Significant*
 
 Each Active Sprint card on the Dashboard now shows that sprint's own Total practiced / Avg per session / Sessions logged. Added three pie charts sharing the dashboard's date-range filter — Sprint breakdown, Course breakdown, Technique breakdown — plus a Top 5 Logged Exercises list ranked by time spent. Pure frontend change, no schema/backend involved.
+
+## v15.1 — Fix broken selected-state backgrounds
+*Minor*
+
+v13's CSS-variable conversion missed a second form of the old hex-alpha-suffix trick (`C.brass + "22"`, not just the `${C.brass}66` template-literal form that got fixed at the time), silently breaking the selected/active background on every chip picker, tab, and toggle using it — 14 spots across technique tags, plan-form pickers, quiz answers, and more. Fixed the same way as before: `color-mix()` via the existing `alpha()` helper.
