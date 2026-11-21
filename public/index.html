@@ -1086,7 +1086,8 @@ const TABS = [
     { id: "topics", label: "Topics & Questions" },
     { id: "forums", label: "Forums" },
     { id: "messages", label: "Messages" },
-    { id: "courses", label: "Course Material & Techniques" },
+    { id: "courses", label: "Courses" },
+    { id: "techniques", label: "Techniques" },
     { id: "gear", label: "Gear" },
     { id: "theory", label: "Theory" },
     { id: "trainer", label: "Trainer" },
@@ -1577,6 +1578,9 @@ function App({ me }) {
     // Cross-tab handoff: SessionsSearchTab's "Edit" sets this and switches to the
     // Sessions tab, which picks it up and clears it once the session is loaded.
     const [editSessionId, setEditSessionId] = useState(null);
+    // Same pattern: CourseMaterialTab's "Open in Sprints tab" sets this so
+    // SprintsTab opens already scoped to that course.
+    const [pendingSprintsCourseId, setPendingSprintsCourseId] = useState(null);
     const allReady = sessionsReady && sprintsReady && techniquesReady && plansReady && topicsReady
         && gearReady && theoryReady && coursesReady && notesReady;
     if (!allReady) {
@@ -1660,18 +1664,23 @@ function App({ me }) {
         React.createElement("main", { className: "fw-main", style: { padding: 16, maxWidth: 900, margin: "0 auto" } },
             tab === "dashboard" && React.createElement(Dashboard, { data: data, setTab: setTab, sprints: sprints, coursesIndex: coursesIndex }),
             tab === "sessions" && (React.createElement(SessionsTab, { data: data, sessions: sessions, setSessions: setSessions, plans: plans, setPlans: setPlans, coursesIndex: coursesIndex, sprints: sprints, editSessionId: editSessionId, setEditSessionId: setEditSessionId })),
-            tab === "search" && E(SessionsSearchTab, { sessions: sessions, techniques: techniques, sprints: sprints, onEditSession: (id) => { setEditSessionId(id); setTab("sessions"); } }),
+            tab === "search" && E(SessionsSearchTab, { sessions: sessions, techniques: techniques, sprints: sprints, coursesIndex: coursesIndex, setSessions: setSessions, onEditSession: (id) => { setEditSessionId(id); setTab("sessions"); } }),
             tab === "recordings" && E(RecordingsTab, { sessions: sessions, setSessions: setSessions, sprints: sprints }),
-            tab === "sprints" && E(SprintsTab, { sessions: sessions, setSessions: setSessions, sprints: sprints, setSprints: setSprints, coursesIndex: coursesIndex, setTab: setTab, techniques: techniques }),
+            tab === "sprints" && E(SprintsTab, {
+                sessions: sessions, setSessions: setSessions, sprints: sprints, setSprints: setSprints, coursesIndex: coursesIndex, setTab: setTab, techniques: techniques,
+                initialCourseId: pendingSprintsCourseId, onInitialCourseIdUsed: () => setPendingSprintsCourseId(null),
+            }),
             tab === "calendar" && E(CalendarTab, { sessions: sessions, sprints: sprints, coursesIndex: coursesIndex, onEditSession: (id) => { setEditSessionId(id); setTab("sessions"); } }),
             tab === "topics" && React.createElement(TopicsTab, { topics: topics, setTopics: setTopics, me: me }),
             tab === "forums" && E(ForumsTab, null),
             tab === "messages" && E(MessagesTab, null),
             tab === "instructor" && me && me.role === "instructor" && E(InstructorTab, null),
-            tab === "courses" && E(CourseMaterialAndTechniquesTab, {
+            tab === "courses" && E(CourseMaterialTab, {
                 coursesIndex: coursesIndex, setCoursesIndex: setCoursesIndex, notes: notes, setNotes: setNotes,
-                sessions: sessions, sprints: sprints, techniques: techniques, setTechniques: setTechniques,
+                sessions: sessions, sprints: sprints, techniques: techniques,
+                setTab: setTab, setPendingSprintsCourseId: setPendingSprintsCourseId,
             }),
+            tab === "techniques" && E(TechniquesTab, { sessions: sessions, techniques: techniques, setTechniques: setTechniques }),
             tab === "gear" && React.createElement(GearTab, { gear: gear, setGear: setGear }),
             tab === "theory" && React.createElement(TheoryTab, { theory: theory, setTheory: setTheory }),
             tab === "trainer" && React.createElement(TrainerTab, null),
@@ -1875,11 +1884,12 @@ function daysAgoISO(n) {
     d.setDate(d.getDate() - n);
     return d.toISOString().slice(0, 10);
 }
-function resolveDateRange(preset, { sprints, customFrom, customTo }) {
+function resolveDateRange(preset, { sprints, coursesIndex, customFrom, customTo }) {
     if (preset === "thisSprint") {
-        // "This Sprint" means the general (no-course) active sprint — course-scoped
-        // date ranges aren't part of this picker yet, now that sprints are per-course.
-        const s = activeSprintForCourse(sprints, null);
+        // "This Sprint" means General's active sprint — course-scoped date ranges
+        // aren't part of this picker yet. General is a real course now (issue
+        // #17), so this needs its actual id, not the old null-course convention.
+        const s = activeSprintForCourse(sprints, generalCourseId(coursesIndex));
         return s ? { from: s.startDate, to: s.endDate, empty: false } : { from: null, to: null, empty: true };
     }
     if (preset === "previousSprint") {
@@ -1933,10 +1943,10 @@ function PieChart({ slices }) {
 }
 function Dashboard({ data, setTab, sprints, coursesIndex }) {
     const activeSprints = activeSprintsByCourse(sprints);
-    const [rangePreset, setRangePreset] = useState(() => (activeSprintForCourse(sprints, null) ? "thisSprint" : "allTime"));
+    const [rangePreset, setRangePreset] = useState(() => (activeSprintForCourse(sprints, generalCourseId(coursesIndex)) ? "thisSprint" : "allTime"));
     const [customFrom, setCustomFrom] = useState(todayISO());
     const [customTo, setCustomTo] = useState(todayISO());
-    const range = resolveDateRange(rangePreset, { sprints, customFrom, customTo });
+    const range = resolveDateRange(rangePreset, { sprints, coursesIndex, customFrom, customTo });
     const inRange = (s) => (!range.from || s.date >= range.from) && (!range.to || s.date <= range.to);
     const filtered = range.empty ? [] : data.sessions.filter(inRange);
 
@@ -2158,6 +2168,13 @@ function activeSprintsByCourse(sprints) {
     const map = new Map();
     (sprints || []).filter((s) => s.status === "active").forEach((s) => map.set(s.courseId || null, s));
     return map;
+}
+// General is a real course now (issue #17), not a course_id IS NULL bucket --
+// anywhere that used to mean "general" by passing null as a courseId needs the
+// real id instead, since no sprint ever has a null course_id anymore.
+function generalCourseId(coursesIndex) {
+    const c = (coursesIndex || []).find((x) => x.name === "General");
+    return c ? c.id : null;
 }
 // Two anchors given: 15min day -> 5/8/2; "full" session -> 5-15 warmup / >=15 content / 15-30 cooldown.
 // Interpolated continuously across the boundary — see plan doc for verification numbers.
@@ -3052,12 +3069,12 @@ function SessionsTab({ data, sessions, setSessions, plans, setPlans, coursesInde
 /* ---------------------------------------------------------
    SESSIONS SEARCH TAB — date-range lookup over logged sessions
 --------------------------------------------------------- */
-function SessionsSearchTab({ sessions, techniques, sprints, onEditSession }) {
+function SessionsSearchTab({ sessions, techniques, sprints, coursesIndex, setSessions, onEditSession }) {
     const [preset, setPreset] = useState("thisWeek");
     const [customFrom, setCustomFrom] = useState(todayISO());
     const [customTo, setCustomTo] = useState(todayISO());
     const [expandedId, setExpandedId] = useState(null);
-    const range = resolveDateRange(preset, { sprints, customFrom, customTo });
+    const range = resolveDateRange(preset, { sprints, coursesIndex, customFrom, customTo });
     const inRange = (s) => (!range.from || s.date >= range.from) && (!range.to || s.date <= range.to);
     const matches = range.empty ? [] : [...sessions].filter(inRange).sort((a, b) => (a.date < b.date ? 1 : -1));
 
@@ -3147,11 +3164,15 @@ function RecordingsTab({ sessions, setSessions, sprints }) {
 /* ---------------------------------------------------------
    SPRINTS TAB
 --------------------------------------------------------- */
-function SprintsTab({ sessions, setSessions, sprints, setSprints, coursesIndex, setTab, techniques }) {
+function SprintsTab({ sessions, setSessions, sprints, setSprints, coursesIndex, setTab, techniques, initialCourseId, onInitialCourseIdUsed }) {
     // Each course runs its own concurrent sprint now — this tab is scoped to whichever
-    // one is selected, "General" (no course) being the pre-existing single-sprint behavior.
-    const [selectedCourseId, setSelectedCourseId] = useState(null);
-    const sprint = activeSprintForCourse(sprints, selectedCourseId);
+    // one is selected. General is a real course (issue #17), so it's just another
+    // entry here, not a synthetic null-id pseudo-course anymore.
+    const [selectedCourseId, setSelectedCourseId] = useState(() => initialCourseId || generalCourseId(coursesIndex));
+    useEffect(() => { if (initialCourseId && onInitialCourseIdUsed) onInitialCourseIdUsed(); }, []);
+    const activeSprint = activeSprintForCourse(sprints, selectedCourseId);
+    const [editingSprintId, setEditingSprintId] = useState(null);
+    const sprint = editingSprintId ? sprints.find((s) => s.id === editingSprintId) : activeSprint;
     const selectedCourse = selectedCourseId ? (coursesIndex || []).find((c) => c.id === selectedCourseId) : null;
     const sprintLengthLabel = selectedCourse
         ? `${selectedCourse.sprintLengthValue} ${selectedCourse.sprintLengthUnit}${selectedCourse.sprintLengthValue === 1 ? "" : "s"}`
@@ -3162,10 +3183,10 @@ function SprintsTab({ sessions, setSessions, sprints, setSprints, coursesIndex, 
     const CourseSelector = () => E(Card, null,
         E(Label, null, "Course"),
         E("div", { style: { display: "flex", flexWrap: "wrap", gap: 6, marginTop: 6 } },
-            [{ id: null, name: "General" }, ...(coursesIndex || [])].map((c) => {
-                const on = (selectedCourseId || null) === (c.id || null);
+            (coursesIndex || []).map((c) => {
+                const on = selectedCourseId === c.id;
                 return E("button", {
-                    type: "button", key: c.id || "general", onClick: () => setSelectedCourseId(c.id),
+                    type: "button", key: c.id, onClick: () => { setSelectedCourseId(c.id); setEditingSprintId(null); },
                     style: {
                         fontSize: 12.5, padding: "6px 12px", borderRadius: 20,
                         border: `1px solid ${on ? C.brass : C.line}`, background: on ? alpha(C.brass, "22") : "transparent",
@@ -3242,6 +3263,12 @@ function SprintsTab({ sessions, setSessions, sprints, setSprints, coursesIndex, 
         const { endedSprint, newSprint } = await api.sprints.end(carryPicker.id, { startDate: todayISO(), carryQueueItemIds: [...carrySelected] });
         setSprints((all) => [newSprint, ...all.map((s) => (s.id === endedSprint.id ? endedSprint : s))]);
         setCarryPicker(null);
+    };
+    // Backfilling a missed session can mean correcting a past sprint's own dates
+    // (issue #17) -- queue items were already editable regardless of status.
+    const updateSprintDates = async (id, startDate, endDate) => {
+        const updated = await api.sprints.patch(id, { startDate, endDate });
+        setSprints((all) => all.map((s) => (s.id === id ? updated : s)));
     };
 
     const refSummary = (ref) => {
@@ -3392,7 +3419,9 @@ function SprintsTab({ sessions, setSessions, sprints, setSprints, coursesIndex, 
                     E("span", null,
                         E("span", { style: { fontFamily: FONT_MONO, color: C.brass, fontSize: 11 } }, fmtDate(s.startDate), " – ", fmtDate(s.endDate)),
                         " · ", s.queue.filter((q) => q.completed).length, "/", s.queue.length, " complete"),
-                    E(Btn, { variant: "ghost", onClick: () => showRecap(s), style: { fontSize: 11, padding: "4px 8px" } }, "Recap")))));
+                    E("div", { style: { display: "flex", gap: 6 } },
+                        E(Btn, { variant: "ghost", onClick: () => setEditingSprintId(s.id), style: { fontSize: 11, padding: "4px 8px" } }, "Edit"),
+                        E(Btn, { variant: "ghost", onClick: () => showRecap(s), style: { fontSize: 11, padding: "4px 8px" } }, "Recap"))))));
     }
 
     const ranked = sprint.queue; // already server-ranked by category, then manual order
@@ -3419,12 +3448,18 @@ function SprintsTab({ sessions, setSessions, sprints, setSprints, coursesIndex, 
                 E(Btn, { variant: "ghost", onClick: () => setCarryPicker(null) }, "Cancel"))),
         E(Card, null,
             E("div", { style: { display: "flex", justifyContent: "space-between", alignItems: "baseline", flexWrap: "wrap", gap: 8 } },
-                E(Label, null, "Active sprint — ", selectedCourse ? selectedCourse.name : "General"),
-                E("span", { style: { fontFamily: FONT_MONO, fontSize: 11, color: C.inkFaint } }, fmtDate(sprint.startDate), " → ", fmtDate(sprint.endDate))),
+                E(Label, null, editingSprintId ? "Editing past sprint — " : "Active sprint — ", selectedCourse ? selectedCourse.name : "General"),
+                !editingSprintId && E("span", { style: { fontFamily: FONT_MONO, fontSize: 11, color: C.inkFaint } }, fmtDate(sprint.startDate), " → ", fmtDate(sprint.endDate))),
+            editingSprintId && E("div", { style: { display: "flex", gap: 8, alignItems: "center", marginTop: 8 } },
+                E(Input, { type: "date", value: sprint.startDate, onChange: (e) => updateSprintDates(sprint.id, e.target.value, sprint.endDate), style: { width: 150 } }),
+                E("span", null, "→"),
+                E(Input, { type: "date", value: sprint.endDate, onChange: (e) => updateSprintDates(sprint.id, sprint.startDate, e.target.value), style: { width: 150 } })),
             E("div", { style: { display: "flex", gap: 8, marginTop: 8, flexWrap: "wrap" } },
                 E(Btn, { variant: "ghost", onClick: () => setTab("sessions") }, "Log a session →"),
                 E(Btn, { variant: "ghost", onClick: () => showRecap(sprint) }, "Recap"),
-                E(Btn, { variant: "danger", onClick: openEndSprint }, "End sprint")),
+                editingSprintId
+                    ? E(Btn, { variant: "ghost", onClick: () => setEditingSprintId(null) }, "← Back to active sprint")
+                    : E(Btn, { variant: "danger", onClick: openEndSprint }, "End sprint")),
             E("div", { style: { marginTop: 10, paddingTop: 10, borderTop: `1px solid ${C.line}` } },
                 E(Label, null, "Techniques"),
                 E(TechniqueTagPicker, { scopeType: "sprint", scopeId: sprint.id, techniques: techniques }))),
@@ -3443,7 +3478,9 @@ function SprintsTab({ sessions, setSessions, sprints, setSprints, coursesIndex, 
                 E("span", null,
                     E("span", { style: { fontFamily: FONT_MONO, color: C.brass, fontSize: 11 } }, fmtDate(s.startDate), " – ", fmtDate(s.endDate)),
                     " · ", s.queue.filter((q) => q.completed).length, "/", s.queue.length, " complete"),
-                E(Btn, { variant: "ghost", onClick: () => showRecap(s), style: { fontSize: 11, padding: "4px 8px" } }, "Recap")))));
+                E("div", { style: { display: "flex", gap: 6 } },
+                    E(Btn, { variant: s.id === editingSprintId ? "primary" : "ghost", onClick: () => setEditingSprintId(s.id), style: { fontSize: 11, padding: "4px 8px" } }, "Edit"),
+                    E(Btn, { variant: "ghost", onClick: () => showRecap(s), style: { fontSize: 11, padding: "4px 8px" } }, "Recap"))))));
 }
 /* ---------------------------------------------------------
    CALENDAR TAB — month grid + day drill-down. Sessions/sprints/courses are
@@ -4368,15 +4405,6 @@ function MessagesTab() {
    COURSE MATERIAL & TECHNIQUES — one nav entry, two fully separate entities
    underneath (no data merge, just a shared sub-tab switcher).
 --------------------------------------------------------- */
-function CourseMaterialAndTechniquesTab({ coursesIndex, setCoursesIndex, notes, setNotes, sessions, sprints, techniques, setTechniques }) {
-    const [view, setView] = useState("material"); // material | techniques
-    return E("div", { style: { display: "grid", gap: 14 } },
-        E("div", { style: { display: "flex", gap: 8 } },
-            E(Btn, { variant: view === "material" ? "primary" : "ghost", onClick: () => setView("material") }, "Course Material"),
-            E(Btn, { variant: view === "techniques" ? "primary" : "ghost", onClick: () => setView("techniques") }, "Techniques")),
-        view === "material" && E(CourseMaterialTab, { coursesIndex: coursesIndex, setCoursesIndex: setCoursesIndex, notes: notes, setNotes: setNotes, sessions: sessions, sprints: sprints, techniques: techniques }),
-        view === "techniques" && E(TechniquesTab, { sessions: sessions, techniques: techniques, setTechniques: setTechniques }));
-}
 /* ---------------------------------------------------------
    COURSE MATERIAL — courses, uploaded lessons, reader, notes index
 --------------------------------------------------------- */
@@ -4387,7 +4415,7 @@ const CHECKUP_QUESTIONS = [
     "What would you focus on next time?",
     "Any additional notes?",
 ];
-function CourseMaterialTab({ coursesIndex, setCoursesIndex, notes, setNotes, sessions, sprints, techniques }) {
+function CourseMaterialTab({ coursesIndex, setCoursesIndex, notes, setNotes, sessions, sprints, techniques, setTab, setPendingSprintsCourseId }) {
     const [view, setView] = useState("library"); // library | notesIndex
     const [selectedCourseId, setSelectedCourseId] = useState(null);
     const [selectedLessonId, setSelectedLessonId] = useState(null);
@@ -4737,6 +4765,33 @@ function CourseMaterialTab({ coursesIndex, setCoursesIndex, notes, setNotes, ses
         view === "library" && selectedCourseId && !selectedLessonId && E(Card, null,
             E(Label, null, "Technique breakdown"),
             E(PieChart, { slices: courseTechBreakdown })),
+        // Read-only on purpose (issue #17) -- editing a sprint's queue/dates stays
+        // in the Sprints tab, which already owns all that CRUD; this is just a
+        // browsable index of the course's sprints and what was logged under each.
+        view === "library" && selectedCourseId && !selectedLessonId && E(Card, null,
+            E("div", { style: { display: "flex", justifyContent: "space-between", alignItems: "baseline" } },
+                E(Label, null, "Sprints"),
+                E(Btn, {
+                    variant: "ghost", style: { fontSize: 11, padding: "4px 8px" },
+                    onClick: () => { setPendingSprintsCourseId(selectedCourseId); setTab("sprints"); },
+                }, "Open in Sprints tab →")),
+            (() => {
+                const courseSprints = [...(sprints || [])].filter((sp) => sp.courseId === selectedCourseId)
+                    .sort((a, b) => (a.startDate < b.startDate ? 1 : a.startDate > b.startDate ? -1 : 0));
+                if (!courseSprints.length) return E(Empty, { text: "No sprints yet for this course." });
+                return courseSprints.map((sp) => {
+                    const sprintSessions = (sessions || []).filter((s) => s.sprintId === sp.id)
+                        .sort((a, b) => (a.date < b.date ? 1 : a.date > b.date ? -1 : 0));
+                    return E("div", { key: sp.id, style: { padding: "10px 0", borderBottom: `1px solid ${C.line}` } },
+                        E("div", { style: { display: "flex", justifyContent: "space-between", alignItems: "baseline" } },
+                            E("span", { style: { fontFamily: FONT_MONO, fontSize: 12, color: C.brass } }, fmtDate(sp.startDate), " – ", fmtDate(sp.endDate)),
+                            E("span", { style: { fontSize: 11, fontFamily: FONT_MONO, color: sp.status === "active" ? C.sage : C.inkFaint, textTransform: "uppercase" } }, sp.status)),
+                        E("div", { style: { marginTop: 6, display: "grid", gap: 2 } },
+                            sprintSessions.length
+                                ? sprintSessions.map((s) => E(SessionSummaryRow, { key: s.id, s: s, techniques: techniques }))
+                                : E("div", { style: { fontSize: 11.5, color: C.inkFaint } }, "No sessions logged yet.")));
+                });
+            })()),
             React.createElement(Card, null,
                 React.createElement(Label, null, "Upload a lesson (Word .docx, PDF, RTF, or image)"),
                 React.createElement("input", { type: "file", accept: ".docx,.pdf,.rtf,image/png,image/jpeg,image/gif,image/webp", disabled: uploading, onChange: (e) => { if (e.target.files[0])
