@@ -186,3 +186,8 @@ Third phase of issue #17. "Course Material & Techniques" splits into two real to
 *Major*
 
 Final phase of issue #17. Logging a session now picks a course first, auto-resolving to its active sprint, with an option to override to a past sprint under that course for backfilling — no more "not linked to any sprint," since every session always has one. Sessions Search gained bulk actions: a checkbox per row and an Action Bar for Delete, Duplicate as new session(s), Link to a course's active sprint, or Link to one exact (including past) sprint — correcting several misfiled sessions in one pass. Closes out the hierarchy restructuring begun in v17.
+
+## v20.0.1 — Show linked course & sprint by name on session rows
+*Minor*
+
+Since v17, every session always links to a sprint, so the old "· sprint session" suffix had stopped carrying any real information. The Sessions tab's history list and Search Sessions now both show which course and sprint (by date range) a session is linked to, by name.
