@@ -196,3 +196,8 @@ The Sprints tab now shows three blocks for whichever course is selected: Current
 *Minor*
 
 Since v17, every session always links to a sprint, so the old "· sprint session" suffix had stopped carrying any real information. The Sessions tab's history list and Search Sessions now both show which course and sprint (by date range) a session is linked to, by name.
+
+## v21.0.1 — Fix silent reload loop on auth failure
+*Minor*
+
+On a device where the login cookie sometimes isn't sent (seen on iOS Safari, issue #22), the app used to respond to any failed request with an unconditional page reload — looking exactly like "nothing loads," with no visible error. It now drops straight to the login screen instead, with no reload at all.
