@@ -2309,10 +2309,16 @@ function RecordingRow({ r, onDelete }) {
         }, "⬇"),
         onDelete && E(Btn, { variant: "danger", style: { fontSize: 11, padding: "4px 7px" }, onClick: () => onDelete(r) }, "✕"));
 }
-function SessionSummaryRow({ s, techniques, onEdit, onDelete }) {
+function SessionSummaryRow({ s, techniques, sprints, coursesIndex, onEdit, onDelete }) {
     const plannedTotal = s.plannedMinutes != null ? s.plannedMinutes
         : (s.blocks || []).reduce((sum, b) => sum + (b.plannedMinutes != null ? Number(b.plannedMinutes) : 0), 0);
     const actualTotal = s.actualMinutesManual != null ? s.actualMinutesManual : s.duration;
+    // Which course/sprint this session is linked to, shown by name rather than
+    // just "sprint session" — every session always has a sprint now (issue #17),
+    // so the generic label stopped being useful; this is what people actually
+    // asked to see on the Sessions and Search Sessions pages.
+    const linkedSprint = sprints && s.sprintId ? sprints.find((sp) => sp.id === s.sprintId) : null;
+    const linkedCourse = linkedSprint && coursesIndex ? coursesIndex.find((c) => c.id === linkedSprint.courseId) : null;
     return E("div", { key: s.id, style: { padding: "10px 0", borderBottom: `1px solid ${C.line}` } },
         E("div", { style: { display: "flex", justifyContent: "space-between", alignItems: "start" } },
             E("div", null,
@@ -2320,6 +2326,8 @@ function SessionSummaryRow({ s, techniques, onEdit, onDelete }) {
                     E("span", { style: { fontFamily: FONT_MONO, fontSize: 11, color: C.brass } }, s.date),
                     E("span", { style: { fontFamily: FONT_MONO, fontSize: 11, color: C.inkFaint } }, fmtMin(actualTotal)),
                     s.isAdHoc && E("span", { style: { fontSize: 10, fontFamily: FONT_MONO, color: C.inkFaint, border: `1px solid ${C.line}`, borderRadius: 4, padding: "0 5px" } }, "AD-HOC")),
+                linkedSprint && E("div", { style: { fontSize: 11.5, color: C.brassDim, marginTop: 2 } },
+                    "📂 ", linkedCourse ? linkedCourse.name : "?", " · ", fmtDate(linkedSprint.startDate), " – ", fmtDate(linkedSprint.endDate)),
                 !s.isAdHoc && E("div", { style: { fontSize: 11.5, color: C.inkFaint, marginTop: 2 } },
                     "Planned ", fmtMin(plannedTotal), " · Actual ", fmtMin(actualTotal)),
                 Object.keys(s.techniqueTimes || {}).length > 0 && E("div", { style: { fontSize: 11.5, color: C.inkFaint, marginTop: 4 } },
@@ -2331,7 +2339,7 @@ function SessionSummaryRow({ s, techniques, onEdit, onDelete }) {
                     "📖 ", s.lessonRefs.map((r) => r.label).join(" · ")),
                 s.notes && E("div", { style: { fontSize: 13, color: C.inkDim, marginTop: 4 } }, renderTableFriendlyText(s.notes)),
                 (s.blocks || []).length > 0 && E("div", { style: { fontSize: 11.5, color: C.inkFaint, marginTop: 4 } },
-                    s.blocks.length, " block", s.blocks.length === 1 ? "" : "s", s.sprintId ? " · sprint session" : ""),
+                    s.blocks.length, " block", s.blocks.length === 1 ? "" : "s"),
                 (s.recordings || []).length > 0 && E("div", { style: { display: "grid", gap: 4, marginTop: 6 } },
                     s.recordings.map((r) => E(RecordingRow, { key: r.id, r: r })))),
             E("div", { style: { display: "flex", gap: 6, flexShrink: 0 } },
@@ -3091,7 +3099,7 @@ function SessionsTab({ data, sessions, setSessions, plans, setPlans, coursesInde
         React.createElement(Card, null,
             React.createElement(Label, null, "Session history"),
             sorted.length === 0 ? React.createElement(Empty, { text: "No sessions logged yet." })
-                : sorted.map((s) => E(SessionSummaryRow, { key: s.id, s: s, techniques: data.techniques, onEdit: reopenSession, onDelete: deleteSession })))));
+                : sorted.map((s) => E(SessionSummaryRow, { key: s.id, s: s, techniques: data.techniques, sprints: sprints, coursesIndex: coursesIndex, onEdit: reopenSession, onDelete: deleteSession })))));
 }
 /* ---------------------------------------------------------
    SESSIONS SEARCH TAB — date-range lookup over logged sessions
@@ -3164,7 +3172,7 @@ function SessionsSearchTab({ sessions, techniques, sprints, coursesIndex, setSes
                         E("div", { style: { display: "flex", alignItems: "flex-start", gap: 8 } },
                             E("input", { type: "checkbox", checked: !!selected[s.id], onChange: () => toggleSelect(s.id), style: { marginTop: 6 } }),
                             E("div", { style: { flex: 1, cursor: "pointer" }, onClick: () => setExpandedId(expandedId === s.id ? null : s.id) },
-                                E(SessionSummaryRow, { s, techniques, onEdit: () => onEditSession(s.id) }))),
+                                E(SessionSummaryRow, { s, techniques, sprints, coursesIndex, onEdit: () => onEditSession(s.id) }))),
                         expandedId === s.id && E("div", { style: { padding: "0 0 12px 30px", display: "grid", gap: 6 } },
                             (s.blocks || []).length === 0
                                 ? E("div", { style: { fontSize: 12.5, color: C.inkFaint } }, "No blocks logged on this session.")
