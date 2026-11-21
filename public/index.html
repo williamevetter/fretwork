@@ -2351,9 +2351,8 @@ function SessionsTab({ data, sessions, setSessions, plans, setPlans, coursesInde
     // Which course's sprint a new session should pull its queue/budget from — each
     // course now runs its own concurrent sprint, so this has to be chosen explicitly
     // rather than assumed from a single global "the active sprint."
-    const [selectedCourseId, setSelectedCourseId] = useState(null);
+    const [selectedCourseId, setSelectedCourseId] = useState(() => generalCourseId(coursesIndex));
     const sprint = activeSprintForCourse(sprints, selectedCourseId);
-    const activeSprintsMap = activeSprintsByCourse(sprints);
 
     // --- Block-based session logging ---
     // The session being built is just "whichever id is in draftSessionId" — every block
@@ -2404,6 +2403,21 @@ function SessionsTab({ data, sessions, setSessions, plans, setPlans, coursesInde
     const linkDraftToSprint = async (sprintId) => {
         if (isPending) { setPendingDraftData((d) => ({ ...d, sprintId })); return; }
         mergeSession(await api.sessions.patch(draft.id, { sprintId }));
+    };
+    // Course-first sprint picker (issue #17): pick a course, auto-resolve to its
+    // active sprint, or override to a past one under that same course to backfill
+    // a missed/misfiled session. Every session always has a sprint now, so there's
+    // no "not linked" option anymore.
+    const [linkCourseId, setLinkCourseId] = useState(null);
+    useEffect(() => {
+        if (!draft || !draft.sprintId) return;
+        const sp = (sprints || []).find((s) => s.id === draft.sprintId);
+        if (sp) setLinkCourseId(sp.courseId);
+    }, [draft && draft.sprintId]);
+    const chooseLinkCourse = (courseId) => {
+        setLinkCourseId(courseId);
+        const active = activeSprintForCourse(sprints, courseId);
+        if (active) linkDraftToSprint(active.id);
     };
     const setDraftDate = async (newDate) => {
         if (!newDate) return;
@@ -2763,17 +2777,30 @@ function SessionsTab({ data, sessions, setSessions, plans, setPlans, coursesInde
                 E("label", { style: { display: "flex", alignItems: "center", gap: 8, fontSize: 12.5, color: C.inkFaint, marginTop: 8 } },
                     E("input", { type: "checkbox", checked: !!draft.isAdHoc, onChange: (e) => toggleAdHoc(e.target.checked) }),
                     "Ad-hoc session (hide Planned vs Actual for this one)"),
-                activeSprintsMap.size > 0 && E("div", { style: { marginTop: 8, display: "flex", alignItems: "center", gap: 8 } },
-                    E("span", { style: { fontSize: 12.5, color: C.inkFaint } }, "Link to sprint:"),
-                    E(Select, {
-                        value: draft.sprintId || "", onChange: (e) => linkDraftToSprint(e.target.value || null),
+                (coursesIndex || []).length > 0 && E("div", { style: { marginTop: 8, display: "grid", gap: 6 } },
+                    E("span", { style: { fontSize: 12.5, color: C.inkFaint } }, "Linked to:"),
+                    E("div", { style: { display: "flex", flexWrap: "wrap", gap: 6 } },
+                        (coursesIndex || []).map((c) => {
+                            const on = linkCourseId === c.id;
+                            return E("button", {
+                                type: "button", key: c.id, onClick: () => chooseLinkCourse(c.id),
+                                style: {
+                                    fontSize: 12, padding: "5px 10px", borderRadius: 20,
+                                    border: `1px solid ${on ? C.brass : C.line}`, background: on ? alpha(C.brass, "22") : "transparent",
+                                    color: on ? C.brass : C.inkDim, cursor: "pointer",
+                                },
+                            }, c.name);
+                        })),
+                    linkCourseId && E(Select, {
+                        value: draft.sprintId || "", onChange: (e) => linkDraftToSprint(e.target.value),
                         style: { fontSize: 12.5, padding: "4px 6px" },
                     },
-                        E("option", { value: "" }, "Not linked to any sprint"),
-                        [...activeSprintsMap.entries()].map(([courseId, sp]) => {
-                            const course = courseId ? (coursesIndex || []).find((c) => c.id === courseId) : null;
-                            return E("option", { key: sp.id, value: sp.id }, course ? course.name : "General");
-                        }))),
+                        activeSprintForCourse(sprints, linkCourseId) && E("option",
+                            { value: activeSprintForCourse(sprints, linkCourseId).id },
+                            "Active sprint (", fmtDate(activeSprintForCourse(sprints, linkCourseId).startDate), " – ", fmtDate(activeSprintForCourse(sprints, linkCourseId).endDate), ")"),
+                        [...(sprints || [])].filter((sp) => sp.status !== "active" && sp.courseId === linkCourseId)
+                            .sort((a, b) => (a.startDate < b.startDate ? 1 : a.startDate > b.startDate ? -1 : 0))
+                            .map((sp) => E("option", { key: sp.id, value: sp.id }, "Past: ", fmtDate(sp.startDate), " – ", fmtDate(sp.endDate))))),
                 E("div", { style: { display: "flex", gap: 20, flexWrap: "wrap", marginTop: 10, paddingTop: 10, borderTop: `1px solid ${C.line}` } },
                     E("div", null,
                         E(Label, null, "Planned time"),
@@ -3078,6 +3105,51 @@ function SessionsSearchTab({ sessions, techniques, sprints, coursesIndex, setSes
     const inRange = (s) => (!range.from || s.date >= range.from) && (!range.to || s.date <= range.to);
     const matches = range.empty ? [] : [...sessions].filter(inRange).sort((a, b) => (a.date < b.date ? 1 : -1));
 
+    // Bulk actions (issue #17) -- same object-map selection + conditional Action
+    // Bar pattern already used in TopicsTab, so backfilling/correcting several
+    // misfiled sessions at once doesn't need a one-at-a-time edit for each.
+    const [selected, setSelected] = useState({});
+    const toggleSelect = (id) => setSelected((s) => ({ ...s, [id]: !s[id] }));
+    const selectedIds = Object.keys(selected).filter((id) => selected[id]);
+    const [bulkCourseId, setBulkCourseId] = useState(null);
+    const [bulkSprintId, setBulkSprintId] = useState(null);
+    const [bulkBusy, setBulkBusy] = useState(false);
+    const clearSelection = () => { setSelected({}); setBulkCourseId(null); setBulkSprintId(null); };
+    const bulkDelete = async () => {
+        setBulkBusy(true);
+        for (const id of selectedIds) await api.sessions.remove(id);
+        setSessions((all) => all.filter((s) => !selectedIds.includes(s.id)));
+        clearSelection();
+        setBulkBusy(false);
+    };
+    const bulkLinkToCourseActive = async () => {
+        const active = activeSprintForCourse(sprints, bulkCourseId);
+        if (!active) return;
+        setBulkBusy(true);
+        const updates = [];
+        for (const id of selectedIds) updates.push(await api.sessions.patch(id, { sprintId: active.id }));
+        setSessions((all) => all.map((s) => updates.find((u) => u.id === s.id) || s));
+        clearSelection();
+        setBulkBusy(false);
+    };
+    const bulkLinkToSprint = async () => {
+        if (!bulkSprintId) return;
+        setBulkBusy(true);
+        const updates = [];
+        for (const id of selectedIds) updates.push(await api.sessions.patch(id, { sprintId: bulkSprintId }));
+        setSessions((all) => all.map((s) => updates.find((u) => u.id === s.id) || s));
+        clearSelection();
+        setBulkBusy(false);
+    };
+    const bulkDuplicate = async () => {
+        setBulkBusy(true);
+        const created = [];
+        for (const id of selectedIds) created.push(await api.sessions.duplicate(id));
+        setSessions((all) => [...created, ...all]);
+        clearSelection();
+        setBulkBusy(false);
+    };
+
     return E("div", { style: { display: "grid", gap: 14 } },
         E(Card, null,
             E(Label, null, "Search by date range"),
@@ -3089,16 +3161,37 @@ function SessionsSearchTab({ sessions, techniques, sprints, coursesIndex, setSes
                 matches.length === 0
                     ? E(Empty, { text: "No sessions in this range." })
                     : matches.map((s) => E("div", { key: s.id },
-                        E("div", { style: { cursor: "pointer" }, onClick: () => setExpandedId(expandedId === s.id ? null : s.id) },
-                            E(SessionSummaryRow, { s, techniques, onEdit: () => onEditSession(s.id) })),
-                        expandedId === s.id && E("div", { style: { padding: "0 0 12px 12px", display: "grid", gap: 6 } },
+                        E("div", { style: { display: "flex", alignItems: "flex-start", gap: 8 } },
+                            E("input", { type: "checkbox", checked: !!selected[s.id], onChange: () => toggleSelect(s.id), style: { marginTop: 6 } }),
+                            E("div", { style: { flex: 1, cursor: "pointer" }, onClick: () => setExpandedId(expandedId === s.id ? null : s.id) },
+                                E(SessionSummaryRow, { s, techniques, onEdit: () => onEditSession(s.id) }))),
+                        expandedId === s.id && E("div", { style: { padding: "0 0 12px 30px", display: "grid", gap: 6 } },
                             (s.blocks || []).length === 0
                                 ? E("div", { style: { fontSize: 12.5, color: C.inkFaint } }, "No blocks logged on this session.")
                                 : s.blocks.map((b) => E("div", { key: b.id, style: { fontSize: 12.5, color: C.inkDim, display: "flex", justifyContent: "space-between", gap: 10 } },
                                     E("span", null,
                                         E("span", { style: { fontFamily: FONT_MONO, fontSize: 10.5, color: C.inkFaint, textTransform: "uppercase", marginRight: 6 } }, b.category),
                                         b.material, b.completed ? "" : " (not marked done)"),
-                                    E("span", { style: { fontFamily: FONT_MONO, color: C.inkFaint } }, fmtMin(b.actualMinutes)))))))));
+                                    E("span", { style: { fontFamily: FONT_MONO, color: C.inkFaint } }, fmtMin(b.actualMinutes)))))))),
+        selectedIds.length > 0 && E(Card, null,
+            E(Label, null, selectedIds.length, " selected"),
+            E("div", { style: { display: "flex", gap: 8, flexWrap: "wrap", marginTop: 8 } },
+                E(Btn, { variant: "danger", disabled: bulkBusy, onClick: bulkDelete }, "Delete"),
+                E(Btn, { variant: "ghost", disabled: bulkBusy, onClick: bulkDuplicate }, "Duplicate as new session(s)"),
+                E(Btn, { variant: "ghost", onClick: clearSelection }, "Clear selection")),
+            E("div", { style: { display: "flex", gap: 8, flexWrap: "wrap", marginTop: 10, alignItems: "center" } },
+                E(Select, { value: bulkCourseId || "", onChange: (e) => setBulkCourseId(e.target.value || null) },
+                    E("option", { value: "" }, "Choose a course…"),
+                    (coursesIndex || []).map((c) => E("option", { key: c.id, value: c.id }, c.name))),
+                E(Btn, { disabled: bulkBusy || !bulkCourseId, onClick: bulkLinkToCourseActive }, "Link to course's active sprint")),
+            E("div", { style: { display: "flex", gap: 8, flexWrap: "wrap", marginTop: 8, alignItems: "center" } },
+                E(Select, { value: bulkSprintId || "", onChange: (e) => setBulkSprintId(e.target.value || null) },
+                    E("option", { value: "" }, "Choose a sprint (incl. past)…"),
+                    [...(sprints || [])].sort((a, b) => (a.startDate < b.startDate ? 1 : a.startDate > b.startDate ? -1 : 0)).map((sp) => {
+                        const course = (coursesIndex || []).find((c) => c.id === sp.courseId);
+                        return E("option", { key: sp.id, value: sp.id }, (course ? course.name : "?"), " — ", fmtDate(sp.startDate), sp.status !== "active" ? " (past)" : "");
+                    })),
+                E(Btn, { disabled: bulkBusy || !bulkSprintId, onClick: bulkLinkToSprint }, "Link to this exact sprint"))));
 }
 /* ---------------------------------------------------------
    RECORDINGS TAB — every recording across every session, searchable by date,
