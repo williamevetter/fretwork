@@ -161,3 +161,13 @@ v13's CSS-variable conversion missed a second form of the old hex-alpha-suffix t
 *Major*
 
 A session block can now cover several techniques and/or course materials at once, sharing one timer — a "Use session timer for all techniques/materials" checkbox toggles the picker between single-select and multi-select chips, in both the live session block form and the Plan form's block editor. The full elapsed minutes credit every linked technique (not split). Added rename for techniques (previously add/remove only) and uploaded course materials (previously upload/delete only), plus a per-course Technique Breakdown pie. Scoped from issue #15's broader hierarchy discussion — most of the Course → Sprint → Session hierarchy it asked about already existed; this is the genuinely new pieces confirmed in discussion.
+
+## v16.0.1 — Fix technique-delete FK violation
+*Minor*
+
+Deleting a technique that had been tagged on a block before v16's multi-technique migration (and never re-saved through the new system) failed outright — the legacy single-technique column on that block, left in place unused, still enforced its own foreign key. Cleared it on delete, alongside the two join-table deletes already handled.
+
+## v17 — "General" becomes a real course; every session always has a sprint
+*Major*
+
+First phase of issue #17 (Course → Sprint → Session as a real, navigable hierarchy). Every user now has their own real "General" course (previously a `course_id IS NULL` convention, invisible as a course in its own right) and every session always ends up linked to a sprint — unspecified sprints default to General's active one, created automatically if needed. A session's sprint link can now be changed to any sprint you own, past or active, for backfilling a missed or misfiled entry, and a past sprint's own start/end dates are now directly editable (its queue items already were).
