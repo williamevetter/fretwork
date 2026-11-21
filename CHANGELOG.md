@@ -171,3 +171,8 @@ Deleting a technique that had been tagged on a block before v16's multi-techniqu
 *Major*
 
 First phase of issue #17 (Course → Sprint → Session as a real, navigable hierarchy). Every user now has their own real "General" course (previously a `course_id IS NULL` convention, invisible as a course in its own right) and every session always ends up linked to a sprint — unspecified sprints default to General's active one, created automatically if needed. A session's sprint link can now be changed to any sprint you own, past or active, for backfilling a missed or misfiled entry, and a past sprint's own start/end dates are now directly editable (its queue items already were).
+
+## v18 — Standalone course materials, consolidated lesson routes, session duplicate
+*Major*
+
+Second phase of issue #17. Course materials (lessons) can now stand alone with no course at all, instead of always belonging to exactly one — lesson ownership is now direct rather than derived through a course that doesn't have to exist. Sessions can also be duplicated now, copying every block (and its linked techniques/materials) but not timer state or recordings — useful for correcting a misfiled entry without retyping it.
