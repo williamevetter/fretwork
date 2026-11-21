@@ -1581,6 +1581,9 @@ function App({ me }) {
     // Same pattern: CourseMaterialTab's "Open in Sprints tab" sets this so
     // SprintsTab opens already scoped to that course.
     const [pendingSprintsCourseId, setPendingSprintsCourseId] = useState(null);
+    // Same pattern again: SprintsTab's "Edit" on a Planned Sprint Session sets
+    // this so the Sessions tab opens straight into editing that plan.
+    const [editPlanId, setEditPlanId] = useState(null);
     const allReady = sessionsReady && sprintsReady && techniquesReady && plansReady && topicsReady
         && gearReady && theoryReady && coursesReady && notesReady;
     if (!allReady) {
@@ -1663,12 +1666,15 @@ function App({ me }) {
             }, "Admin")),
         React.createElement("main", { className: "fw-main", style: { padding: 16, maxWidth: 900, margin: "0 auto" } },
             tab === "dashboard" && React.createElement(Dashboard, { data: data, setTab: setTab, sprints: sprints, coursesIndex: coursesIndex }),
-            tab === "sessions" && (React.createElement(SessionsTab, { data: data, sessions: sessions, setSessions: setSessions, plans: plans, setPlans: setPlans, coursesIndex: coursesIndex, sprints: sprints, editSessionId: editSessionId, setEditSessionId: setEditSessionId })),
+            tab === "sessions" && (React.createElement(SessionsTab, { data: data, sessions: sessions, setSessions: setSessions, plans: plans, setPlans: setPlans, coursesIndex: coursesIndex, sprints: sprints, editSessionId: editSessionId, setEditSessionId: setEditSessionId, editPlanId: editPlanId, setEditPlanId: setEditPlanId })),
             tab === "search" && E(SessionsSearchTab, { sessions: sessions, techniques: techniques, sprints: sprints, coursesIndex: coursesIndex, setSessions: setSessions, onEditSession: (id) => { setEditSessionId(id); setTab("sessions"); } }),
             tab === "recordings" && E(RecordingsTab, { sessions: sessions, setSessions: setSessions, sprints: sprints }),
             tab === "sprints" && E(SprintsTab, {
                 sessions: sessions, setSessions: setSessions, sprints: sprints, setSprints: setSprints, coursesIndex: coursesIndex, setTab: setTab, techniques: techniques,
+                plans: plans,
                 initialCourseId: pendingSprintsCourseId, onInitialCourseIdUsed: () => setPendingSprintsCourseId(null),
+                onEditSession: (id) => { setEditSessionId(id); setTab("sessions"); },
+                onEditPlan: (id) => { setEditPlanId(id); setTab("sessions"); },
             }),
             tab === "calendar" && E(CalendarTab, { sessions: sessions, sprints: sprints, coursesIndex: coursesIndex, onEditSession: (id) => { setEditSessionId(id); setTab("sessions"); } }),
             tab === "topics" && React.createElement(TopicsTab, { topics: topics, setTopics: setTopics, me: me }),
@@ -2346,9 +2352,9 @@ function SessionSummaryRow({ s, techniques, sprints, coursesIndex, onEdit, onDel
                 onEdit && E(Btn, { variant: "ghost", onClick: () => onEdit(s), style: { fontSize: 11.5, padding: "6px 9px" } }, "Edit"),
                 onDelete && E(Btn, { variant: "danger", onClick: () => onDelete(s.id), style: { fontSize: 11.5, padding: "6px 9px" } }, "✕"))));
 }
-function SessionsTab({ data, sessions, setSessions, plans, setPlans, coursesIndex, sprints, editSessionId, setEditSessionId }) {
+function SessionsTab({ data, sessions, setSessions, plans, setPlans, coursesIndex, sprints, editSessionId, setEditSessionId, editPlanId, setEditPlanId }) {
     const [mode, setMode] = useState("log");
-    const BLANK_PLAN_FORM = { date: todayISO(), content: "", goals: "", plannedMinutes: null, techniques: [], lessonRefs: [], blocks: [] };
+    const BLANK_PLAN_FORM = { date: todayISO(), content: "", goals: "", plannedMinutes: null, sprintId: null, techniques: [], lessonRefs: [], blocks: [] };
     const [planForm, setPlanForm] = useState(BLANK_PLAN_FORM);
     // Editing an existing plan (not starting it) is staged, not auto-saved — "Save
     // changes" only shows up once the form actually differs from what was loaded.
@@ -2679,21 +2685,41 @@ function SessionsTab({ data, sessions, setSessions, plans, setPlans, coursesInde
             setPlans((p) => [created, ...p]);
         }
         setPlanForm(BLANK_PLAN_FORM);
+        setPlanLinkCourseId(null);
     };
     // Edit an existing planned session without starting it — loads it into the same
     // form used to create one, switching that form into "editing" mode.
     const startEditPlan = (p) => {
-        const formState = { date: p.date, content: p.content, goals: p.goals, plannedMinutes: p.plannedMinutes, techniques: p.techniques, lessonRefs: p.lessonRefs, blocks: p.blocks || [] };
+        const formState = { date: p.date, content: p.content, goals: p.goals, plannedMinutes: p.plannedMinutes, sprintId: p.sprintId || null, techniques: p.techniques, lessonRefs: p.lessonRefs, blocks: p.blocks || [] };
         setPlanForm(formState);
         setOriginalPlanForm(formState);
         setEditingPlanId(p.id);
         setMode("plan");
+        const sp = p.sprintId ? (sprints || []).find((s) => s.id === p.sprintId) : null;
+        setPlanLinkCourseId(sp ? sp.courseId : null);
     };
     const cancelEditPlan = () => {
         setEditingPlanId(null);
         setOriginalPlanForm(null);
         setPlanForm(BLANK_PLAN_FORM);
+        setPlanLinkCourseId(null);
     };
+    // Course-first sprint picker for Plans (issue #21), same pattern as the
+    // one Sessions already got in #17/v20.
+    const [planLinkCourseId, setPlanLinkCourseId] = useState(null);
+    const choosePlanLinkCourse = (courseId) => {
+        setPlanLinkCourseId(courseId);
+        const active = activeSprintForCourse(sprints, courseId);
+        setPlanForm((f) => ({ ...f, sprintId: active ? active.id : null }));
+    };
+    // Picks up an "Edit this plan" handoff from SprintsTab's Planned Sprint
+    // Sessions block (issue #21).
+    useEffect(() => {
+        if (!editPlanId) return;
+        const p = plans.find((x) => x.id === editPlanId);
+        if (p) startEditPlan(p);
+        setEditPlanId(null);
+    }, [editPlanId]);
     // Planned blocks on a Plan — structured work items (category/material/planned time),
     // added/removed on the client; "Start session now" turns each into a real block.
     const [planBlockForm, setPlanBlockForm] = useState(null);
@@ -2718,7 +2744,7 @@ function SessionsTab({ data, sessions, setSessions, plans, setPlans, coursesInde
     const startPlanNow = async (p) => {
         let created = await api.sessions.create({
             date: todayISO(),
-            sprintId: sprint ? sprint.id : null,
+            sprintId: p.sprintId || (sprint ? sprint.id : null),
             notes: `Plan: ${p.goals}${p.content ? " — " + p.content : ""}`,
             plannedMinutes: p.plannedMinutes,
         });
@@ -2981,6 +3007,30 @@ function SessionsTab({ data, sessions, setSessions, plans, setPlans, coursesInde
                 React.createElement("div", null,
                     React.createElement(Label, null, "Content to cover"),
                     React.createElement(TextArea, { rows: 2, value: planForm.content, onChange: (e) => setPlanForm({ ...planForm, content: e.target.value }), placeholder: "Warm-up scales, specific piece, technique drills\u2026" })),
+                (coursesIndex || []).length > 0 && E("div", null,
+                    E(Label, null, "Sprint"),
+                    E("div", { style: { display: "flex", flexWrap: "wrap", gap: 6, marginTop: 4 } },
+                        (coursesIndex || []).map((c) => {
+                            const on = planLinkCourseId === c.id;
+                            return E("button", {
+                                type: "button", key: c.id, onClick: () => choosePlanLinkCourse(c.id),
+                                style: {
+                                    fontSize: 12, padding: "5px 10px", borderRadius: 20,
+                                    border: `1px solid ${on ? C.brass : C.line}`, background: on ? alpha(C.brass, "22") : "transparent",
+                                    color: on ? C.brass : C.inkDim, cursor: "pointer",
+                                },
+                            }, c.name);
+                        })),
+                    planLinkCourseId && E(Select, {
+                        value: planForm.sprintId || "", onChange: (e) => setPlanForm({ ...planForm, sprintId: e.target.value }),
+                        style: { fontSize: 12.5, padding: "4px 6px", marginTop: 6 },
+                    },
+                        activeSprintForCourse(sprints, planLinkCourseId) && E("option",
+                            { value: activeSprintForCourse(sprints, planLinkCourseId).id },
+                            "Active sprint (", fmtDate(activeSprintForCourse(sprints, planLinkCourseId).startDate), " \u2013 ", fmtDate(activeSprintForCourse(sprints, planLinkCourseId).endDate), ")"),
+                        [...(sprints || [])].filter((sp) => sp.status !== "active" && sp.courseId === planLinkCourseId)
+                            .sort((a, b) => (a.startDate < b.startDate ? 1 : a.startDate > b.startDate ? -1 : 0))
+                            .map((sp) => E("option", { key: sp.id, value: sp.id }, "Past: ", fmtDate(sp.startDate), " \u2013 ", fmtDate(sp.endDate))))),
                 E("div", null,
                     E(Label, null, "Planned blocks"),
                     planForm.blocks.length > 0 && E("div", { style: { display: "grid", gap: 6, marginBottom: 8 } },
@@ -3265,7 +3315,7 @@ function RecordingsTab({ sessions, setSessions, sprints }) {
 /* ---------------------------------------------------------
    SPRINTS TAB
 --------------------------------------------------------- */
-function SprintsTab({ sessions, setSessions, sprints, setSprints, coursesIndex, setTab, techniques, initialCourseId, onInitialCourseIdUsed }) {
+function SprintsTab({ sessions, setSessions, sprints, setSprints, coursesIndex, setTab, techniques, plans, initialCourseId, onInitialCourseIdUsed, onEditSession, onEditPlan }) {
     // Each course runs its own concurrent sprint now — this tab is scoped to whichever
     // one is selected. General is a real course (issue #17), so it's just another
     // entry here, not a synthetic null-id pseudo-course anymore.
@@ -3281,6 +3331,38 @@ function SprintsTab({ sessions, setSessions, sprints, setSprints, coursesIndex, 
     const pastSprints = [...sprints]
         .filter((s) => s.status !== "active" && (s.courseId || null) === (selectedCourseId || null))
         .sort((a, b) => (a.startDate < b.startDate ? 1 : -1));
+    const lastSprint = pastSprints[0] || null;
+    // Three overview blocks (issue #21) -- always keyed off the ACTIVE sprint and
+    // the most recent past one, independent of whatever editingSprintId is doing
+    // elsewhere (editing a past sprint's dates/queue is a separate concern from
+    // this fixed "what's logged/planned right now vs. last time" overview).
+    const currentSprintSessions = activeSprint ? sessions.filter((s) => s.sprintId === activeSprint.id).sort((a, b) => (a.date < b.date ? 1 : a.date > b.date ? -1 : 0)) : [];
+    const currentSprintPlans = activeSprint ? (plans || []).filter((p) => p.sprintId === activeSprint.id).sort((a, b) => (a.date < b.date ? 1 : a.date > b.date ? -1 : 0)) : [];
+    const lastSprintSessions = lastSprint ? sessions.filter((s) => s.sprintId === lastSprint.id).sort((a, b) => (a.date < b.date ? 1 : a.date > b.date ? -1 : 0)) : [];
+    const SprintOverviewBlocks = () => E(React.Fragment, null,
+        E(Card, null,
+            E(Label, null, "Current Sprint — Sessions Logged"),
+            currentSprintSessions.length === 0
+                ? E(Empty, { text: "No sessions logged yet this sprint." })
+                : currentSprintSessions.map((s) => E(SessionSummaryRow, { key: s.id, s: s, techniques: techniques, sprints: sprints, coursesIndex: coursesIndex, onEdit: () => onEditSession(s.id) }))),
+        E(Card, null,
+            E(Label, null, "Planned Sprint Sessions"),
+            currentSprintPlans.length === 0
+                ? E(Empty, { text: "No plans linked to this sprint yet." })
+                : currentSprintPlans.map((p) => E("div", { key: p.id, style: { padding: "8px 0", borderBottom: `1px solid ${C.line}` } },
+                    E("div", { style: { display: "flex", justifyContent: "space-between", alignItems: "start" } },
+                        E("div", null,
+                            E("div", { style: { fontFamily: FONT_MONO, fontSize: 11, color: C.brass } }, p.date),
+                            E("div", { style: { fontWeight: 600, fontSize: 13.5 } }, p.goals),
+                            p.plannedMinutes != null && E("div", { style: { fontSize: 11.5, color: C.inkFaint, marginTop: 2 } }, "Planned ", fmtMin(p.plannedMinutes))),
+                        E(Btn, { variant: "ghost", onClick: () => onEditPlan(p.id), style: { fontSize: 11, padding: "4px 8px", flexShrink: 0 } }, "Edit"))))),
+        E(Card, null,
+            E(Label, null, "Last Sprint", lastSprint && E("span", { style: { fontFamily: FONT_MONO, fontSize: 11, color: C.inkFaint, marginLeft: 8 } }, fmtDate(lastSprint.startDate), " – ", fmtDate(lastSprint.endDate))),
+            !lastSprint
+                ? E(Empty, { text: "No previous sprint for this course yet." })
+                : lastSprintSessions.length === 0
+                    ? E(Empty, { text: "No sessions were logged last sprint." })
+                    : lastSprintSessions.map((s) => E(SessionSummaryRow, { key: s.id, s: s, techniques: techniques, sprints: sprints, coursesIndex: coursesIndex, onEdit: () => onEditSession(s.id) }))));
     const CourseSelector = () => E(Card, null,
         E(Label, null, "Course"),
         E("div", { style: { display: "flex", flexWrap: "wrap", gap: 6, marginTop: 6 } },
@@ -3509,6 +3591,7 @@ function SprintsTab({ sessions, setSessions, sprints, setSprints, coursesIndex, 
             ModeToggle(),
             CourseSelector(),
             RecapCard(),
+            SprintOverviewBlocks(),
             E(Card, null,
                 E(Label, null, "Start a sprint"),
                 E("div", { style: { display: "grid", gridTemplateColumns: "1fr auto", gap: 10, alignItems: "end" } },
@@ -3537,6 +3620,7 @@ function SprintsTab({ sessions, setSessions, sprints, setSprints, coursesIndex, 
         ModeToggle(),
         CourseSelector(),
         RecapCard(),
+        SprintOverviewBlocks(),
         carryPicker && E(Card, { style: { border: `1px solid ${C.brass}` } },
             E(Label, null, "End sprint — carry forward unfinished items?"),
             carryPicker.queue.filter((q) => !q.completed).length === 0

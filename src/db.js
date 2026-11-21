@@ -537,6 +537,13 @@ No racist, sexist, or religious slurs — ZERO TOLERANCE.', '${new Date().toISOS
       db.prepare("UPDATE sessions SET sprint_id = ? WHERE id = ?").run(sprint.id, s.id);
     });
   },
+  // Issue #21: a Plan can now be linked to a sprint (nullable -- existing plans
+  // stay unlinked), so "Planned Sprint Sessions" on the Sprints tab means
+  // something real instead of inheriting whatever sprint happened to be
+  // selected elsewhere at "Start session now" time.
+  `
+  ALTER TABLE plans ADD COLUMN sprint_id TEXT REFERENCES sprints(id);
+  `,
 ];
 
 function runMigrations() {
