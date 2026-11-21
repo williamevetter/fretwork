@@ -201,3 +201,8 @@ Since v17, every session always links to a sprint, so the old "· sprint session
 *Minor*
 
 On a device where the login cookie sometimes isn't sent (seen on iOS Safari, issue #22), the app used to respond to any failed request with an unconditional page reload — looking exactly like "nothing loads," with no visible error. It now drops straight to the login screen instead, with no reload at all.
+
+## v21.0.2 — Fix large file uploads (issue #23)
+*Minor*
+
+Uploading a 20+ MB PDF as course material failed. Infrastructure, not app code: nginx had no upload size limit configured for this site, so it was silently rejecting anything over its 1MB default before the request ever reached the app — even though the app itself already allows up to 50MB. Fixed in the nginx config, no app code changed.
