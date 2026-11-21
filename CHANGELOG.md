@@ -176,3 +176,8 @@ First phase of issue #17 (Course → Sprint → Session as a real, navigable hie
 *Major*
 
 Second phase of issue #17. Course materials (lessons) can now stand alone with no course at all, instead of always belonging to exactly one — lesson ownership is now direct rather than derived through a course that doesn't have to exist. Sessions can also be duplicated now, copying every block (and its linked techniques/materials) but not timer state or recordings — useful for correcting a misfiled entry without retyping it.
+
+## v19 — Courses as a real nav hierarchy; edit past sprints
+*Major*
+
+Third phase of issue #17. "Course Material & Techniques" splits into two real top-level tabs — Courses and Techniques. A course's detail view gains a read-only Sprints section showing every sprint under that course (past and active) and the sessions actually logged into each — the direct answer to "sessions aren't showing up under sprints." SprintsTab itself can now edit any sprint you own, not just the active one — a past sprint's start/end dates are directly editable (its queue items already were), covering backfilling a missed session end to end.
