@@ -37,17 +37,6 @@ app.set("trust proxy", 1); // behind nginx — needed so req.secure reflects X-F
 app.use(express.json({ limit: "50mb" })); // lessons can include base64 PDFs/images; recordings arrive as base64 too
 app.use(cookieParser());
 
-// TEMPORARY diagnostic logging for issue #22 (iOS Safari: data not populating).
-// Logs whether the auth cookie actually arrived on each API request, plus the
-// response status -- remove once the root cause is confirmed.
-app.use("/api", (req, res, next) => {
-  const hasCookie = !!req.cookies.fw_token;
-  res.on("finish", () => {
-    console.log(`[diag#22] ${req.method} ${req.path} cookie=${hasCookie} status=${res.statusCode} ua="${req.headers["user-agent"] || ""}"`);
-  });
-  next();
-});
-
 app.use("/api/auth", authRouter);
 app.use("/api/techniques", techniquesRouter);
 app.use("/api/sprints", sprintsRouter);
