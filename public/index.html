@@ -72,6 +72,7 @@ const api = {
     create: (body) => apiCall("POST", "/sessions", body),
     patch: (id, body) => apiCall("PATCH", `/sessions/${id}`, body),
     remove: (id) => apiCall("DELETE", `/sessions/${id}`),
+    duplicate: (id) => apiCall("POST", `/sessions/${id}/duplicate`),
     addBlock: (sessionId, body) => apiCall("POST", `/sessions/${sessionId}/blocks`, body),
     patchBlock: (id, body) => apiCall("PATCH", `/sessions/blocks/${id}`, body),
     removeBlock: (id) => apiCall("DELETE", `/sessions/blocks/${id}`),
@@ -141,17 +142,20 @@ const api = {
     create: (body) => apiCall("POST", "/courses", body),
     patch: (id, body) => apiCall("PATCH", `/courses/${id}`, body),
     remove: (id) => apiCall("DELETE", `/courses/${id}`),
-    addLesson: (courseId, body) => apiCall("POST", `/courses/${courseId}/lessons`, body),
-    removeLesson: (courseId, lessonId) => apiCall("DELETE", `/courses/${courseId}/lessons/${lessonId}`),
-    patchLesson: (courseId, lessonId, title) => apiCall("PATCH", `/courses/${courseId}/lessons/${lessonId}`, { title }),
-    linkLessonToCourse: (lessonId, courseId) => apiCall("POST", `/courses/lessons/${lessonId}/courses`, { courseId }),
-    unlinkLessonFromCourse: (lessonId, courseId) => apiCall("DELETE", `/courses/lessons/${lessonId}/courses/${courseId}`),
     createFromLesson: (body) => apiCall("POST", "/courses/from-lesson", body),
     end: (id, answers) => apiCall("POST", `/courses/${id}/end`, { answers }),
     reopen: (id) => apiCall("POST", `/courses/${id}/reopen`),
     continueCourse: (id, name) => apiCall("POST", `/courses/${id}/continue`, { name }),
     checkups: (id) => apiCall("GET", `/courses/${id}/checkups`),
     goalProgress: (id) => apiCall("GET", `/courses/${id}/goal-progress`),
+  },
+  lessons: {
+    create: (body) => apiCall("POST", "/lessons", body),
+    patch: (id, body) => apiCall("PATCH", `/lessons/${id}`, body),
+    remove: (id) => apiCall("DELETE", `/lessons/${id}`),
+    linkToCourse: (lessonId, courseId) => apiCall("POST", `/lessons/${lessonId}/courses`, { courseId }),
+    unlinkFromCourse: (lessonId, courseId) => apiCall("DELETE", `/lessons/${lessonId}/courses/${courseId}`),
+    standalone: () => apiCall("GET", "/lessons/standalone"),
   },
   notes: {
     list: () => apiCall("GET", "/notes"),
@@ -4525,7 +4529,8 @@ function CourseMaterialTab({ coursesIndex, setCoursesIndex, notes, setNotes, ses
         setUploadError("");
         try {
             const parsed = await parseLessonFile(file);
-            const meta = await api.courses.addLesson(selectedCourseId, {
+            const meta = await api.lessons.create({
+                courseId: selectedCourseId,
                 title: file.name.replace(/\.[^.]+$/, ""),
                 fileType: parsed.fileType,
                 fileName: file.name,
@@ -4552,7 +4557,8 @@ function CourseMaterialTab({ coursesIndex, setCoursesIndex, notes, setNotes, ses
         setUploading(true);
         setUploadError("");
         try {
-            const meta = await api.courses.addLesson(selectedCourseId, {
+            const meta = await api.lessons.create({
+                courseId: selectedCourseId,
                 title: youtubeForm.title.trim() || "YouTube video",
                 fileType: "youtube", uploadedDate: todayISO(), dataUrl: youtubeForm.url.trim(),
             });
@@ -4571,13 +4577,13 @@ function CourseMaterialTab({ coursesIndex, setCoursesIndex, notes, setNotes, ses
     const cancelEditLesson = () => { setEditingLessonId(null); setEditLessonTitle(""); };
     const saveEditLesson = async (l) => {
         if (!editLessonTitle.trim()) return;
-        const updated = await api.courses.patchLesson(selectedCourseId, l.id, editLessonTitle.trim());
+        const updated = await api.lessons.patch(l.id, { title: editLessonTitle.trim() });
         setCoursesIndex((idx) => idx.map((c) => (c.id === selectedCourseId ? { ...c, lessons: (c.lessons || []).map((x) => (x.id === l.id ? updated : x)) } : c)));
         setCourseContent((c) => ({ lessons: ((c && c.lessons) || []).map((x) => (x.id === l.id ? { ...x, title: updated.title } : x)) }));
         setEditingLessonId(null);
     };
     const deleteLesson = async (lessonId) => {
-        await api.courses.removeLesson(selectedCourseId, lessonId);
+        await api.lessons.remove(lessonId);
         setCourseContent((c) => ({ lessons: ((c === null || c === void 0 ? void 0 : c.lessons) || []).filter((l) => l.id !== lessonId) }));
         setCoursesIndex((idx) => idx.map((c) => (c.id === selectedCourseId ? { ...c, lessons: (c.lessons || []).filter((l) => l.id !== lessonId) } : c)));
         setNotes((n) => n.filter((note) => note.lessonId !== lessonId));
@@ -4783,9 +4789,9 @@ function LessonReader({ course, lessonMeta, lessonContent, notes, setNotes, onBa
     const toggleCourseLink = async (courseId) => {
         if (courseId === lessonMeta.primaryCourseId) return; // primary \u2014 not removable here
         if (linkedCourseIds.includes(courseId))
-            await api.courses.unlinkLessonFromCourse(lessonMeta.id, courseId);
+            await api.lessons.unlinkFromCourse(lessonMeta.id, courseId);
         else
-            await api.courses.linkLessonToCourse(lessonMeta.id, courseId);
+            await api.lessons.linkToCourse(lessonMeta.id, courseId);
         onCoursesChanged();
     };
     const createCurriculum = async (e) => {

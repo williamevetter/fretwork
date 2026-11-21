@@ -3,17 +3,12 @@ const { db } = require("../db");
 const { uid, nowISO } = require("../ids");
 const { addDays } = require("../sprintLogic");
 const { ensureGeneralCourse } = require("../courseSprintDefaults");
+const { lessonMeta, lessonFull, findOwnedLesson } = require("./lessons");
 const requireAuth = require("../middleware");
 
 const router = express.Router();
 router.use(requireAuth);
 
-function lessonMeta(row) {
-  return { id: row.id, title: row.title, fileType: row.file_type, fileName: row.file_name, uploadedDate: row.uploaded_date, primaryCourseId: row.course_id };
-}
-function lessonFull(row) {
-  return { ...lessonMeta(row), html: row.html, text: row.text, dataUrl: row.data_url };
-}
 const SPRINT_LENGTH_UNITS = ["day", "week", "month", "year"];
 const WEEKDAY_CODES = ["mon", "tue", "wed", "thu", "fri", "sat", "sun"];
 const GOAL_PERIODS = ["custom", "sprint", "session", "daily", "weekly", "monthly"];
@@ -208,87 +203,9 @@ router.delete("/:id", (req, res) => {
   res.json({ ok: true });
 });
 
-router.post("/:id/lessons", (req, res) => {
-  const course = db.prepare("SELECT * FROM courses WHERE id = ? AND user_id = ?").get(req.params.id, req.user.id);
-  if (!course) return res.status(404).json({ error: "Not found." });
-  const { title, fileType, fileName, uploadedDate, html, text, dataUrl } = req.body || {};
-  if (!title || !fileType) return res.status(400).json({ error: "title and fileType are required." });
-  const { max } = db.prepare("SELECT COALESCE(MAX(sort_order), -1) AS max FROM lessons WHERE course_id = ?").get(course.id);
-  const row = {
-    id: uid(), title, file_type: fileType, file_name: fileName || null, uploaded_date: uploadedDate || null,
-    html: html || null, text: text || null, data_url: dataUrl || null, sort_order: max + 1,
-  };
-  db.prepare(`
-    INSERT INTO lessons (id, course_id, title, file_type, file_name, uploaded_date, html, text, data_url, sort_order)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-  `).run(row.id, course.id, row.title, row.file_type, row.file_name, row.uploaded_date, row.html, row.text, row.data_url, row.sort_order);
-  res.json(lessonMeta(row));
-});
-
-router.patch("/:courseId/lessons/:lessonId", (req, res) => {
-  const row = db.prepare(`
-    SELECT lessons.* FROM lessons JOIN courses ON courses.id = lessons.course_id
-    WHERE lessons.id = ? AND lessons.course_id = ? AND courses.user_id = ?
-  `).get(req.params.lessonId, req.params.courseId, req.user.id);
-  if (!row) return res.status(404).json({ error: "Not found." });
-  const title = (req.body?.title || "").trim();
-  if (!title) return res.status(400).json({ error: "title is required." });
-  db.prepare("UPDATE lessons SET title = ? WHERE id = ?").run(title, row.id);
-  res.json(lessonMeta({ ...row, title }));
-});
-
-router.delete("/:courseId/lessons/:lessonId", (req, res) => {
-  const row = db.prepare(`
-    SELECT lessons.* FROM lessons JOIN courses ON courses.id = lessons.course_id
-    WHERE lessons.id = ? AND lessons.course_id = ? AND courses.user_id = ?
-  `).get(req.params.lessonId, req.params.courseId, req.user.id);
-  if (!row) return res.status(404).json({ error: "Not found." });
-  db.exec("BEGIN");
-  try {
-    db.prepare("DELETE FROM notes WHERE lesson_id = ?").run(row.id);
-    db.prepare("DELETE FROM lesson_courses WHERE lesson_id = ?").run(row.id);
-    db.prepare("DELETE FROM technique_assignments WHERE scope_type = 'lesson' AND scope_id = ?").run(row.id);
-    db.prepare("DELETE FROM session_block_lessons WHERE lesson_id = ?").run(row.id);
-    db.prepare("DELETE FROM lessons WHERE id = ?").run(row.id);
-    db.exec("COMMIT");
-  } catch (e) {
-    db.exec("ROLLBACK");
-    throw e;
-  }
-  res.json({ ok: true });
-});
-
-// Finds a lesson the user owns via its PRIMARY course (lessons.course_id) — the only
-// ownership path that doesn't depend on lesson_courses, since that table only ever
-// holds additional links, never the primary one.
-function findOwnedLesson(lessonId, userId) {
-  return db.prepare(`
-    SELECT lessons.* FROM lessons JOIN courses ON courses.id = lessons.course_id
-    WHERE lessons.id = ? AND courses.user_id = ?
-  `).get(lessonId, userId);
-}
-
-// Associates an already-uploaded lesson with one more course, beyond its primary one.
-router.post("/lessons/:id/courses", (req, res) => {
-  const lesson = findOwnedLesson(req.params.id, req.user.id);
-  if (!lesson) return res.status(404).json({ error: "Not found." });
-  const courseId = req.body?.courseId;
-  const course = db.prepare("SELECT id FROM courses WHERE id = ? AND user_id = ?").get(courseId, req.user.id);
-  if (!course) return res.status(404).json({ error: "Course not found." });
-  if (courseId === lesson.course_id) return res.status(400).json({ error: "That's already this lesson's primary course." });
-  const exists = db.prepare("SELECT id FROM lesson_courses WHERE lesson_id = ? AND course_id = ?").get(lesson.id, courseId);
-  if (!exists) {
-    db.prepare("INSERT INTO lesson_courses (id, lesson_id, course_id, created_at) VALUES (?, ?, ?, ?)").run(uid(), lesson.id, courseId, nowISO());
-  }
-  res.json({ ok: true });
-});
-
-router.delete("/lessons/:id/courses/:courseId", (req, res) => {
-  const lesson = findOwnedLesson(req.params.id, req.user.id);
-  if (!lesson) return res.status(404).json({ error: "Not found." });
-  db.prepare("DELETE FROM lesson_courses WHERE lesson_id = ? AND course_id = ?").run(lesson.id, req.params.courseId);
-  res.json({ ok: true });
-});
+// Lesson CRUD (upload/rename/delete/secondary-course-link) lives in ./lessons —
+// issue #17 made lessons ownable independent of any course, so they're no longer
+// nested under /:courseId/lessons here.
 
 // Spins up a brand-new course and links an already-uploaded lesson into it, in one step.
 router.post("/from-lesson", (req, res) => {

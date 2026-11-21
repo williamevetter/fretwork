@@ -10,10 +10,9 @@ const SCOPE_TABLES = { course: "courses", sprint: "sprints", session: "sessions"
 
 function ownsScope(scopeType, scopeId, userId) {
   if (scopeType === "lesson") {
-    return !!db.prepare(`
-      SELECT 1 FROM lessons JOIN courses ON courses.id = lessons.course_id
-      WHERE lessons.id = ? AND courses.user_id = ?
-    `).get(scopeId, userId);
+    // Direct ownership (issue #17) -- a lesson can be standalone, with no
+    // course to derive ownership through.
+    return !!db.prepare("SELECT 1 FROM lessons WHERE id = ? AND user_id = ?").get(scopeId, userId);
   }
   const table = SCOPE_TABLES[scopeType];
   if (!table) return false;

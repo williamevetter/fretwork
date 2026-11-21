@@ -51,11 +51,11 @@ function storageByUser() {
     byUser[r.user_id] = byUser[r.user_id] || { recordingBytes: 0, courseMaterialBytes: 0 };
     byUser[r.user_id].recordingBytes += size;
   });
+  // Direct lessons.user_id (issue #17) -- a joined-through-courses count would
+  // silently miss any standalone lesson (course_id IS NULL).
   const courseRows = db.prepare(`
-    SELECT courses.user_id AS user_id,
-      SUM(LENGTH(COALESCE(lessons.html, '')) + LENGTH(COALESCE(lessons.text, '')) + LENGTH(COALESCE(lessons.data_url, ''))) AS bytes
-    FROM lessons JOIN courses ON courses.id = lessons.course_id
-    GROUP BY courses.user_id
+    SELECT user_id, SUM(LENGTH(COALESCE(html, '')) + LENGTH(COALESCE(text, '')) + LENGTH(COALESCE(data_url, ''))) AS bytes
+    FROM lessons GROUP BY user_id
   `).all();
   courseRows.forEach((r) => {
     byUser[r.user_id] = byUser[r.user_id] || { recordingBytes: 0, courseMaterialBytes: 0 };
@@ -178,7 +178,9 @@ router.delete("/users/:id", (req, res) => {
     db.prepare("DELETE FROM queue_items WHERE sprint_id IN (SELECT id FROM sprints WHERE user_id = ?)").run(target.id);
     db.prepare("DELETE FROM sprints WHERE user_id = ?").run(target.id);
     db.prepare("DELETE FROM notes WHERE user_id = ?").run(target.id);
-    db.prepare("DELETE FROM lessons WHERE course_id IN (SELECT id FROM courses WHERE user_id = ?)").run(target.id);
+    // Direct lessons.user_id (issue #17) -- a course_id-derived delete would leak
+    // any standalone lesson (course_id IS NULL) belonging to this user.
+    db.prepare("DELETE FROM lessons WHERE user_id = ?").run(target.id);
     db.prepare("DELETE FROM courses WHERE user_id = ?").run(target.id);
     db.prepare("DELETE FROM gear_maintenance WHERE gear_id IN (SELECT id FROM gear WHERE user_id = ?)").run(target.id);
     db.prepare("DELETE FROM gear WHERE user_id = ?").run(target.id);

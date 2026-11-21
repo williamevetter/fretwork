@@ -192,6 +192,49 @@ router.delete("/:id", (req, res) => {
   res.json({ ok: true });
 });
 
+// Copies a session and every one of its blocks (issue #17, for correcting a
+// misfiled/duplicate-feeling log entry without retyping it) -- deliberately NOT
+// copied: timer_started_at (a live-session concept) and imported_entry_id (the
+// checklist re-import dedup key; carrying it over would make a future reimport
+// collide with this copy's block), and audio_recordings (expensive, meaningless
+// to duplicate).
+router.post("/:id/duplicate", (req, res) => {
+  const source = findSessionForUser(req.params.id, req.user.id);
+  if (!source) return res.status(404).json({ error: "Not found." });
+  const sourceBlocks = blocksStmt.all(source.id);
+  const blockIds = sourceBlocks.map((b) => b.id);
+  const techMap = techniqueIdsForBlocks(blockIds);
+  const lessonMap = lessonIdsForBlocks(blockIds);
+  const now = nowISO();
+  const newSession = {
+    id: uid(), date: source.date, sprint_id: source.sprint_id, notes: source.notes,
+    is_ad_hoc: source.is_ad_hoc, planned_minutes: source.planned_minutes, actual_minutes_manual: source.actual_minutes_manual,
+    created_at: now, updated_at: now,
+  };
+  db.exec("BEGIN");
+  try {
+    db.prepare(`
+      INSERT INTO sessions (id, user_id, date, sprint_id, notes, is_ad_hoc, planned_minutes, actual_minutes_manual, created_at, updated_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `).run(newSession.id, req.user.id, newSession.date, newSession.sprint_id, newSession.notes, newSession.is_ad_hoc, newSession.planned_minutes, newSession.actual_minutes_manual, newSession.created_at, newSession.updated_at);
+    sourceBlocks.forEach((b) => {
+      const newBlockId = uid();
+      db.prepare(`
+        INSERT INTO session_blocks (id, session_id, queue_item_id, technique_id, material, category, actual_minutes, planned_minutes, completed, important, ref_json, notes, created_at, updated_at)
+        VALUES (?, ?, ?, NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `).run(newBlockId, newSession.id, b.queue_item_id, b.material, b.category, b.actual_minutes, b.planned_minutes, b.completed, b.important, b.ref_json, b.notes, now, now);
+      setBlockTechniques(newBlockId, techMap[b.id] || []);
+      setBlockLessons(newBlockId, lessonMap[b.id] || []);
+    });
+    db.exec("COMMIT");
+  } catch (e) {
+    db.exec("ROLLBACK");
+    throw e;
+  }
+  if (newSession.sprint_id) syncSessionInheritance(req.user.id, newSession.id, newSession.sprint_id);
+  res.json(sessionWithBlocks(newSession, blocksStmt.all(newSession.id)));
+});
+
 router.post("/:id/recordings", (req, res) => {
   const session = findSessionForUser(req.params.id, req.user.id);
   if (!session) return res.status(404).json({ error: "Not found." });
@@ -278,6 +321,11 @@ router.patch("/blocks/:id", (req, res) => {
 router.delete("/blocks/:id", (req, res) => {
   const row = findBlockForUser(req.params.id, req.user.id);
   if (!row) return res.status(404).json({ error: "Not found." });
+  // audio_recordings.block_id REFERENCES session_blocks(id) with no ON DELETE --
+  // a whole-session delete clears this as a side effect (its own DELETE FROM
+  // audio_recordings WHERE session_id = ?), but a single-block delete didn't.
+  // Detach rather than delete: the recording itself is still worth keeping.
+  db.prepare("UPDATE audio_recordings SET block_id = NULL WHERE block_id = ?").run(row.id);
   db.prepare("DELETE FROM session_block_techniques WHERE block_id = ?").run(row.id);
   db.prepare("DELETE FROM session_block_lessons WHERE block_id = ?").run(row.id);
   db.prepare("DELETE FROM session_blocks WHERE id = ?").run(row.id);
@@ -319,14 +367,22 @@ function classifyEntries(entries, userId) {
 }
 
 function applyImport(entries, userId) {
+  // A checklist import can create several historical sprints at once (keyed by
+  // start_date), so ensureActiveSprintForCourse isn't the right primitive here --
+  // it only ever returns *the* currently-active one. Always attach to the user's
+  // General course (issue #17) and read its real cadence instead of a hardcoded
+  // 14-day length, so this path matches ensureDefaultSprintId's semantics.
+  const generalCourseId = ensureGeneralCourse(userId).id;
+  const generalCourse = db.prepare("SELECT sprint_length_value, sprint_length_unit FROM courses WHERE id = ?").get(generalCourseId);
   const sprintIdFor = {};
   entries.forEach((entry) => {
     if (sprintIdFor[entry.sprint_start] !== undefined) return;
-    const existing = db.prepare("SELECT id FROM sprints WHERE user_id = ? AND start_date = ?").get(userId, entry.sprint_start);
+    const existing = db.prepare("SELECT id FROM sprints WHERE user_id = ? AND course_id = ? AND start_date = ?").get(userId, generalCourseId, entry.sprint_start);
     if (existing) { sprintIdFor[entry.sprint_start] = existing.id; return; }
     const id = uid();
-    db.prepare("INSERT INTO sprints (id, user_id, start_date, end_date, status) VALUES (?, ?, ?, ?, 'active')")
-      .run(id, userId, entry.sprint_start, addDays(entry.sprint_start, 13));
+    const endDate = addDays(entry.sprint_start, sprintLengthDays(generalCourse.sprint_length_value, generalCourse.sprint_length_unit) - 1);
+    db.prepare("INSERT INTO sprints (id, user_id, start_date, end_date, status, course_id) VALUES (?, ?, ?, ?, 'active', ?)")
+      .run(id, userId, entry.sprint_start, endDate, generalCourseId);
     sprintIdFor[entry.sprint_start] = id;
   });
 
