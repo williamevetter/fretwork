@@ -187,6 +187,11 @@ Third phase of issue #17. "Course Material & Techniques" splits into two real to
 
 Final phase of issue #17. Logging a session now picks a course first, auto-resolving to its active sprint, with an option to override to a past sprint under that course for backfilling — no more "not linked to any sprint," since every session always has one. Sessions Search gained bulk actions: a checkbox per row and an Action Bar for Delete, Duplicate as new session(s), Link to a course's active sprint, or Link to one exact (including past) sprint — correcting several misfiled sessions in one pass. Closes out the hierarchy restructuring begun in v17.
 
+## v21 — Current sprint / planned / last sprint overview blocks
+*Major*
+
+The Sprints tab now shows three blocks for whichever course is selected: Current Sprint — Sessions Logged, Planned Sprint Sessions, and Last Sprint — each with an Edit button jumping straight to that session or plan. Plans can now be linked to a sprint (the same course-first picker Sessions already have), which "Start session now" honors instead of guessing from whatever's currently selected elsewhere.
+
 ## v20.0.1 — Show linked course & sprint by name on session rows
 *Minor*
 
