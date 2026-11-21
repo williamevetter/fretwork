@@ -41,7 +41,12 @@ async function apiCall(method, path, body) {
     headers: body !== undefined ? { "Content-Type": "application/json" } : undefined,
     body: body !== undefined ? JSON.stringify(body) : undefined,
   });
-  if (res.status === 401) { window.location.reload(); return null; }
+  // Issue #22: this used to window.location.reload() on any 401, which on a
+  // device where the auth cookie keeps dropping (seen on iOS Safari) becomes a
+  // silent infinite reload loop -- indistinguishable from "data not
+  // populating," since the page never gets far enough to render anything.
+  // Drop straight back to the login screen instead, with no page reload at all.
+  if (res.status === 401) { window.dispatchEvent(new CustomEvent("fw:unauthorized")); return null; }
   if (!res.ok) {
     let msg = "Request failed.";
     try { msg = (await res.json()).error || msg; } catch (e) {}
@@ -5634,6 +5639,13 @@ function AuthGate() {
         if (!resetToken)
             checkAuth();
         // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, []);
+    // Any API call getting a 401 (session cookie missing/expired/rejected) fires
+    // this instead of reloading the page -- drops straight to the login screen.
+    useEffect(() => {
+        const onUnauthorized = () => { setMe(null); setStatus("anon"); };
+        window.addEventListener("fw:unauthorized", onUnauthorized);
+        return () => window.removeEventListener("fw:unauthorized", onUnauthorized);
     }, []);
     const logout = async () => {
         await fetch("/api/auth/logout", { method: "POST", credentials: "include" });
